@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import joblib
+import numpy as np
+import pandas as pd
+
+
+def validate_feature_vector(payload: dict[str, Any], artifact: dict[str, Any]) -> list[float]:
+    expected = artifact["feature_order"]
+    missing = [name for name in expected if name not in payload]
+    extra = [name for name in payload if name not in expected]
+    if missing or extra:
+        raise ValueError(f"Feature contract mismatch. Missing={missing}; extra={extra}; expected_order={expected}")
+    values: list[float] = []
+    for name in expected:
+        value = payload[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value):
+            raise ValueError(f"Feature {name} must be a finite numeric value")
+        limits = artifact["limits"][name]
+        lower = limits.get("lower", 0.0)
+        upper = limits.get("upper", 1e12)
+        if value < lower or value > upper * 20:
+            raise ValueError(f"Feature {name}={value} is outside the accepted sensor range")
+        values.append(float(value))
+    return values
+
+
+def predict_quality(payload: dict[str, Any], artifact_path: str | Path) -> dict[str, Any]:
+    artifact = joblib.load(artifact_path)
+    values = validate_feature_vector(payload, artifact)
+    frame = pd.DataFrame([values], columns=artifact["feature_order"])
+    encoded = int(artifact["model"].predict(frame)[0])
+    probabilities = artifact["model"].predict_proba(frame)[0]
+    label = artifact["class_mapping"][str(encoded)]
+    return {
+        "class": label,
+        "confidence": round(float(np.max(probabilities)), 4),
+        "probabilities": {
+            artifact["class_mapping"][str(index)]: round(float(probability), 4)
+            for index, probability in enumerate(probabilities)
+        },
+        "feature_order": artifact["feature_order"],
+        "model_type": artifact.get("model_type", "xgboost"),
+    }

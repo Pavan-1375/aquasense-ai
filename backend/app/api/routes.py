@@ -1,0 +1,921 @@
+from datetime import datetime, timedelta, timezone
+import csv
+import hashlib
+import io
+import json
+from pathlib import Path
+import secrets
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
+from sqlalchemy import desc, text
+from sqlalchemy.orm import Session
+
+from ..config import get_settings
+from ..db import get_db
+from ..models import (
+    Alert,
+    AuditEvent,
+    DataQualityResult,
+    Device,
+    Measurement,
+    ModelExecutionRecord,
+    NotificationDelivery,
+    PasswordResetToken,
+    QualityObservation,
+    ReminderSchedule,
+    SessionToken,
+    Station,
+    SubmissionAttachment,
+    SubmissionBatch,
+    SubmissionReview,
+    User,
+    UserContact,
+    VerificationCode,
+    utc_now,
+)
+from ..schemas import (
+    AdvisorRequest,
+    AdvisorResponse,
+    AlertOut,
+    AlertStateUpdate,
+    AuthResponse,
+    DashboardResponse,
+    DeviceCreate,
+    DeviceOut,
+    ForgotPassword,
+    GroundwaterSubmission,
+    MeasurementIn,
+    MeasurementOut,
+    LocationSyncIn,
+    NotificationDeliveryOut,
+    ProfileUpdate,
+    QualityObservationIn,
+    QualityObservationOut,
+    ReminderScheduleIn,
+    ReminderScheduleOut,
+    SignIn,
+    ResetPassword,
+    SubmissionCreate,
+    SubmissionListResponse,
+    SubmissionOut,
+    SubmissionReviewIn,
+    StationCreate,
+    StationOut,
+    AdminStats,
+    UserCreate,
+    UserOut,
+    VerificationConfirm,
+    VerificationRequest,
+)
+from ..security import get_current_user, hash_password, issue_token, require_admin, verify_password
+from ..services.forecast import fallback_forecast
+from ..services.ingestion import save_measurement, save_measurement_with_key
+from ..services.quality import calculate_wqi
+from ..services.reminders import ensure_schedule, next_occurrence, run_reminder_cycle
+
+
+router = APIRouter(prefix="/api")
+settings = get_settings()
+
+
+class SocketManager:
+    def __init__(self) -> None:
+        self.connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self.connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        if websocket in self.connections:
+            self.connections.remove(websocket)
+
+    async def broadcast(self, payload: dict) -> None:
+        for websocket in list(self.connections):
+            try:
+                await websocket.send_json(payload)
+            except Exception:
+                self.disconnect(websocket)
+
+
+socket_manager = SocketManager()
+
+
+def as_user(user: User, contact: UserContact | None = None) -> UserOut:
+    return UserOut(
+        id=user.id,
+        name=user.name,
+        email=user.email,
+        role=user.role,
+        created_at=user.created_at,
+        mobile_number=contact.mobile_e164 if contact else None,
+        email_verified=contact.email_verified if contact else False,
+        mobile_verified=contact.mobile_verified if contact else False,
+        account_status=contact.account_status if contact else "active",
+        reminder_consent=contact.reminder_consent if contact else False,
+        preferred_reminder_channel=contact.preferred_reminder_channel if contact else "email",
+        timezone=contact.timezone if contact else "Asia/Kolkata",
+    )
+
+
+def as_submission(submission: SubmissionBatch) -> SubmissionOut:
+    return SubmissionOut(
+        id=submission.id,
+        user_id=submission.user_id,
+        station_id=submission.station_id,
+        device_id=submission.device_id,
+        measurement_at=submission.measurement_at,
+        submitted_at=submission.submitted_at,
+        status=submission.status,
+        source=submission.source,
+        measurement_method=submission.measurement_method,
+        remarks=submission.remarks,
+        groundwater=json.loads(submission.groundwater_json) if submission.groundwater_json else None,
+        quality=json.loads(submission.quality_json) if submission.quality_json else None,
+        validation_warnings=json.loads(submission.validation_json or "[]"),
+        review_feedback=submission.review_feedback,
+        reviewed_by=submission.reviewed_by,
+        reviewed_at=submission.reviewed_at,
+        version=submission.version,
+        parent_submission_id=submission.parent_submission_id,
+        created_at=submission.created_at,
+        updated_at=submission.updated_at,
+    )
+
+
+def as_schedule(schedule: ReminderSchedule) -> ReminderScheduleOut:
+    return ReminderScheduleOut(
+        id=schedule.id,
+        user_id=schedule.user_id,
+        enabled=schedule.enabled,
+        weekday=schedule.weekday,
+        local_time=schedule.local_time,
+        timezone=schedule.timezone,
+        channels=json.loads(schedule.channels_json or "[]"),
+        next_run_at=schedule.next_run_at,
+        last_run_at=schedule.last_run_at,
+    )
+
+
+def _otp_hash(code: str) -> str:
+    return hashlib.sha256(f"{settings.secret_key}:{code}".encode()).hexdigest()
+
+
+def _otp_code() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def _quality_warnings(payload: SubmissionCreate) -> list[dict[str, str]]:
+    warnings: list[dict[str, str]] = []
+    if payload.measurement_at.replace(tzinfo=None) > utc_now() + timedelta(minutes=10):
+        warnings.append({"severity": "warning", "code": "future_timestamp", "field": "measurement_at", "detail": "Measurement timestamp is in the future."})
+    if payload.measurement_at.replace(tzinfo=None) < utc_now() - timedelta(days=30):
+        warnings.append({"severity": "warning", "code": "stale_observation", "field": "measurement_at", "detail": "Observation is older than 30 days and should be reviewed."})
+    groundwater = payload.groundwater.model_dump(exclude_none=True) if payload.groundwater else {}
+    quality = payload.quality.model_dump(exclude_none=True) if payload.quality else {}
+    if not groundwater and not quality:
+        warnings.append({"severity": "error", "code": "empty_submission", "field": "submission", "detail": "Provide groundwater or water-quality values."})
+    if groundwater.get("water_level_percent") is not None and groundwater.get("distance_cm") is not None and groundwater["water_level_percent"] == 0 and groundwater["distance_cm"] == 0:
+        warnings.append({"severity": "warning", "code": "sensor_consistency", "field": "groundwater", "detail": "Distance and water-level percentage are both zero; verify the sensor state."})
+    if quality.get("tds_mg_l") is not None and quality.get("ec_us_cm") is not None:
+        ratio = quality["tds_mg_l"] / quality["ec_us_cm"] if quality["ec_us_cm"] else None
+        if ratio is not None and not 0.3 <= ratio <= 0.9:
+            warnings.append({"severity": "warning", "code": "tds_ec_mismatch", "field": "quality", "detail": "TDS is not within the expected approximate relationship to EC; check calibration."})
+    return warnings
+
+
+@router.get("/health")
+def health(request: Request, db: Session = Depends(get_db)) -> dict:
+    database_status = "ok"
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception:
+        database_status = "error"
+    scheduler_enabled = bool(settings.scheduler_enabled)
+    scheduler_running = bool(getattr(request.app.state, "reminder_worker_running", False))
+    artifact_status = "available" if Path("ml/artifacts/quality_model_metadata.json").exists() else "unavailable"
+    overall = "ok" if database_status == "ok" else "degraded"
+    return {
+        "status": overall,
+        "service": "aquasense-ai-api",
+        "database": {"engine": settings.database_url.split(":", 1)[0], "status": database_status},
+        "workers": {"reminders": "running" if scheduler_enabled and scheduler_running else "disabled"},
+        "model_service": artifact_status,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "station_count": db.query(Station).count() if database_status == "ok" else None,
+    }
+
+
+@router.post("/auth/signup", response_model=AuthResponse, status_code=201)
+def signup(payload: UserCreate, db: Session = Depends(get_db)) -> AuthResponse:
+    if db.query(User).filter(User.email == payload.email).first():
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
+    if db.query(UserContact).filter(UserContact.mobile_e164 == payload.mobile_number).first():
+        raise HTTPException(status_code=409, detail="An account with this mobile number already exists")
+    role = "admin" if db.query(User).count() == 0 else "user"
+    user = User(name=payload.name.strip(), email=payload.email, password_hash=hash_password(payload.password), role=role)
+    db.add(user)
+    db.flush()
+    contact = UserContact(
+        user_id=user.id,
+        mobile_e164=payload.mobile_number,
+        reminder_consent=payload.reminder_consent,
+        preferred_reminder_channel=payload.preferred_reminder_channel,
+        timezone=payload.timezone,
+    )
+    db.add(contact)
+    db.flush()
+    schedule = ensure_schedule(db, user, contact)
+    schedule.enabled = payload.reminder_consent
+    db.add(AuditEvent(user_id=user.id, event_type="auth.signup", detail=json.dumps({"role": role})))
+    db.commit()
+    db.refresh(user)
+    token = issue_token(db, user)
+    return AuthResponse(token=token, user=as_user(user, contact))
+
+
+@router.post("/auth/signin", response_model=AuthResponse)
+def signin(payload: SignIn, db: Session = Depends(get_db)) -> AuthResponse:
+    user = db.query(User).filter(User.email == payload.email).first()
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Email or password is incorrect")
+    token = issue_token(db, user)
+    return AuthResponse(token=token, user=as_user(user, db.query(UserContact).filter(UserContact.user_id == user.id).first()))
+
+
+@router.post("/auth/forgot-password")
+def forgot_password(payload: ForgotPassword, db: Session = Depends(get_db)) -> dict:
+    user = db.query(User).filter(User.email == payload.email).first()
+    response = {"status": "accepted", "message": "If the account exists, reset instructions are ready."}
+    if not user:
+        return response
+    token = secrets.token_urlsafe(32)
+    db.add(PasswordResetToken(token=token, user_id=user.id, expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=30)))
+    db.commit()
+    if settings.app_env != "production":
+        response["development_token"] = token
+        response["message"] = "Development fallback: use the returned token in the reset form. Configure email delivery for production."
+    return response
+
+
+@router.post("/auth/reset-password")
+def reset_password(payload: ResetPassword, db: Session = Depends(get_db)) -> dict:
+    reset = db.get(PasswordResetToken, payload.token)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if not reset or reset.used or reset.expires_at < now:
+        raise HTTPException(status_code=400, detail="Reset token is invalid or expired")
+    user = db.get(User, reset.user_id)
+    if not user:
+        raise HTTPException(status_code=400, detail="Reset token is invalid")
+    user.password_hash = hash_password(payload.new_password)
+    reset.used = True
+    db.commit()
+    return {"status": "password_reset", "message": "Password updated. Sign in with the new password."}
+
+
+@router.get("/auth/me", response_model=UserOut)
+def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> UserOut:
+    return as_user(user, db.query(UserContact).filter(UserContact.user_id == user.id).first())
+
+
+@router.post("/auth/logout")
+def logout(authorization: Annotated[str | None, Header()] = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    token = authorization.split(" ", 1)[1].strip() if authorization and " " in authorization else ""
+    if token:
+        from ..models import SessionToken
+
+        session = db.get(SessionToken, token)
+        if session:
+            db.delete(session)
+            db.commit()
+    return {"status": "signed_out", "user_id": user.id}
+
+
+@router.patch("/profile", response_model=UserOut)
+def update_profile(payload: ProfileUpdate, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> UserOut:
+    contact = db.query(UserContact).filter(UserContact.user_id == user.id).first()
+    if payload.name is not None:
+        user.name = payload.name.strip()
+    if contact:
+        values = payload.model_dump(exclude_none=True)
+        values.pop("name", None)
+        for key, value in values.items():
+            setattr(contact, key, value)
+        if payload.reminder_consent is not None:
+            schedule = ensure_schedule(db, user, contact)
+            schedule.enabled = payload.reminder_consent
+            if payload.reminder_consent and not schedule.next_run_at:
+                schedule.next_run_at = next_occurrence(schedule)
+    db.add(AuditEvent(user_id=user.id, event_type="profile.updated", detail=json.dumps(payload.model_dump(exclude_none=True))))
+    db.commit()
+    db.refresh(user)
+    return as_user(user, contact)
+
+
+@router.post("/verification/request")
+def request_verification(payload: VerificationRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    contact = db.query(UserContact).filter(UserContact.user_id == user.id).first()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact profile not found")
+    if payload.channel == "email" and contact.email_verified:
+        return {"status": "already_verified", "channel": payload.channel}
+    if payload.channel == "mobile" and contact.mobile_verified:
+        return {"status": "already_verified", "channel": payload.channel}
+    code = _otp_code()
+    verification = VerificationCode(user_id=user.id, channel=payload.channel, code_hash=_otp_hash(code), expires_at=utc_now() + timedelta(minutes=10))
+    db.add(verification)
+    db.commit()
+    response = {"status": "accepted", "channel": payload.channel, "message": "Verification is queued. Configure an email or SMS provider for real delivery."}
+    if settings.app_env != "production":
+        response["development_code"] = code
+        response["message"] = "Development fallback: use the returned code. No real message was sent."
+    return response
+
+
+@router.post("/verification/confirm", response_model=UserOut)
+def confirm_verification(payload: VerificationConfirm, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> UserOut:
+    verification = db.query(VerificationCode).filter(VerificationCode.user_id == user.id, VerificationCode.channel == payload.channel, VerificationCode.used.is_(False)).order_by(VerificationCode.created_at.desc()).first()
+    if not verification or verification.expires_at < utc_now():
+        raise HTTPException(status_code=400, detail="Verification code is invalid or expired")
+    verification.attempts += 1
+    if verification.attempts > 5 or verification.code_hash != _otp_hash(payload.code):
+        db.commit()
+        raise HTTPException(status_code=400, detail="Verification code is invalid")
+    verification.used = True
+    contact = db.query(UserContact).filter(UserContact.user_id == user.id).first()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact profile not found")
+    if payload.channel == "email":
+        contact.email_verified = True
+    else:
+        contact.mobile_verified = True
+    db.add(AuditEvent(user_id=user.id, event_type=f"contact.{payload.channel}_verified"))
+    db.commit()
+    return as_user(user, contact)
+
+
+@router.get("/reminders", response_model=ReminderScheduleOut)
+def get_reminder_schedule(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> ReminderScheduleOut:
+    contact = db.query(UserContact).filter(UserContact.user_id == user.id).first()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact profile not found")
+    schedule = ensure_schedule(db, user, contact)
+    db.commit()
+    return as_schedule(schedule)
+
+
+@router.put("/reminders", response_model=ReminderScheduleOut)
+def update_reminder_schedule(payload: ReminderScheduleIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> ReminderScheduleOut:
+    contact = db.query(UserContact).filter(UserContact.user_id == user.id).first()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact profile not found")
+    schedule = ensure_schedule(db, user, contact)
+    schedule.enabled = payload.enabled and contact.reminder_consent
+    schedule.weekday = payload.weekday
+    schedule.local_time = payload.local_time
+    schedule.timezone = payload.timezone
+    schedule.channels_json = json.dumps(payload.channels)
+    schedule.next_run_at = next_occurrence(schedule) if schedule.enabled else None
+    contact.timezone = payload.timezone
+    contact.preferred_reminder_channel = "both" if len(payload.channels) == 2 else payload.channels[0]
+    db.add(AuditEvent(user_id=user.id, event_type="reminders.updated", detail=json.dumps(payload.model_dump())))
+    db.commit()
+    db.refresh(schedule)
+    return as_schedule(schedule)
+
+
+@router.get("/notifications", response_model=list[NotificationDeliveryOut])
+def list_notifications(limit: int = Query(default=100, ge=1, le=500), db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[NotificationDelivery]:
+    return db.query(NotificationDelivery).filter(NotificationDelivery.user_id == user.id).order_by(NotificationDelivery.scheduled_at.desc()).limit(limit).all()
+
+
+@router.post("/admin/reminders/test")
+def test_reminder(user_id: str | None = None, db: Session = Depends(get_db), admin: User = Depends(require_admin)) -> dict:
+    target_id = user_id or admin.id
+    schedule = db.query(ReminderSchedule).filter(ReminderSchedule.user_id == target_id).first()
+    if not schedule:
+        target = db.get(User, target_id)
+        contact = db.query(UserContact).filter(UserContact.user_id == target_id).first() if target else None
+        if not target or not contact:
+            raise HTTPException(status_code=404, detail="User contact profile not found")
+        schedule = ensure_schedule(db, target, contact)
+    schedule.next_run_at = utc_now() - timedelta(seconds=1)
+    # SessionLocal deliberately disables autoflush. Persist the temporary due
+    # timestamp before the reminder worker queries due schedules.
+    db.flush()
+    delivered = run_reminder_cycle(db, force_user_id=target_id)
+    db.add(AuditEvent(user_id=admin.id, event_type="reminders.tested", detail=json.dumps({"user_id": target_id, "delivered": delivered})))
+    db.commit()
+    return {"status": "processed", "user_id": target_id, "delivered": delivered, "note": "Development mode records simulated delivery; it does not send real messages."}
+
+
+def _submission_datetime(value: datetime) -> datetime:
+    if value.tzinfo:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _persist_quality_and_groundwater(db: Session, submission: SubmissionBatch) -> None:
+    groundwater = json.loads(submission.groundwater_json) if submission.groundwater_json else {}
+    quality = json.loads(submission.quality_json) if submission.quality_json else {}
+    if groundwater and submission.device_id:
+        existing = db.query(Measurement).filter(Measurement.device_id == submission.device_id, Measurement.timestamp == _submission_datetime(submission.measurement_at)).first()
+        if existing:
+            existing.station_id = submission.station_id
+            existing.distance_cm = groundwater.get("distance_cm")
+            existing.water_level_percent = groundwater.get("water_level_percent")
+            existing.water_depth_cm = groundwater.get("water_depth_cm")
+            existing.temperature_c = quality.get("temperature_c")
+            existing.source = "user-submission"
+            existing.quality_status = "reviewed"
+            existing.raw_json = json.dumps({"submission_id": submission.id, "groundwater": groundwater})
+        else:
+            db.add(Measurement(
+                device_id=submission.device_id,
+                station_id=submission.station_id,
+                timestamp=submission.measurement_at,
+                distance_cm=groundwater.get("distance_cm"),
+                water_level_percent=groundwater.get("water_level_percent"),
+                water_depth_cm=groundwater.get("water_depth_cm"),
+                temperature_c=quality.get("temperature_c"),
+                source="user-submission",
+                quality_status="reviewed",
+                raw_json=json.dumps({"submission_id": submission.id, "groundwater": groundwater}),
+            ))
+    if quality:
+        wqi, classification, missing = calculate_wqi({"measured_at": submission.measurement_at, "station_id": submission.station_id, **quality})
+        db.add(QualityObservation(
+            station_id=submission.station_id,
+            measured_at=submission.measurement_at,
+            ph=quality.get("ph"),
+            tds_mg_l=quality.get("tds_mg_l"),
+            ec_us_cm=quality.get("ec_us_cm"),
+            turbidity_ntu=quality.get("turbidity_ntu"),
+            temperature_c=quality.get("temperature_c"),
+            dissolved_oxygen_mg_l=quality.get("dissolved_oxygen_mg_l"),
+            hardness_mg_l=quality.get("hardness_mg_l"),
+            chloride_mg_l=quality.get("chloride_mg_l"),
+            wqi=wqi,
+            classification=classification,
+            source="user-submission",
+            data_quality="partial" if missing else "valid",
+        ))
+    db.add(ModelExecutionRecord(submission_id=submission.id, model_name="quality-screening", model_version="xgboost-quality-0.1", status="completed", input_json=submission.quality_json, output_json=json.dumps({"classification": classification if quality else None})))
+
+
+@router.post("/submissions", response_model=SubmissionOut, status_code=201)
+def create_submission(payload: SubmissionCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> SubmissionOut:
+    station = db.get(Station, payload.station_id)
+    if not station:
+        raise HTTPException(status_code=404, detail="Monitoring station not found")
+    if payload.device_id:
+        device = db.query(Device).filter(Device.device_id == payload.device_id).first()
+        if not device:
+            raise HTTPException(status_code=422, detail="Device identifier is not registered")
+        if device.station_id and device.station_id != payload.station_id:
+            raise HTTPException(status_code=422, detail="Device is assigned to another monitoring station")
+    measurement_at = _submission_datetime(payload.measurement_at)
+    duplicate = db.query(SubmissionBatch).filter(SubmissionBatch.user_id == user.id, SubmissionBatch.station_id == payload.station_id, SubmissionBatch.measurement_at == measurement_at, SubmissionBatch.status != "Rejected").first()
+    if duplicate:
+        raise HTTPException(status_code=409, detail="A submission already exists for this user, station and measurement timestamp")
+    warnings = _quality_warnings(payload)
+    if any(item["severity"] == "error" for item in warnings):
+        raise HTTPException(status_code=422, detail=warnings[0]["detail"])
+    groundwater = payload.groundwater.model_dump(exclude_none=True) if payload.groundwater else None
+    quality = payload.quality.model_dump(exclude_none=True) if payload.quality else None
+    status = "Draft" if payload.save_as_draft else "Submitted"
+    submission = SubmissionBatch(user_id=user.id, station_id=payload.station_id, device_id=payload.device_id, measurement_at=measurement_at, submitted_at=None if status == "Draft" else utc_now(), status=status, source=payload.source, measurement_method=payload.measurement_method, remarks=payload.remarks, groundwater_json=json.dumps(groundwater) if groundwater else None, quality_json=json.dumps(quality) if quality else None, validation_json=json.dumps(warnings))
+    db.add(submission)
+    db.flush()
+    for warning in warnings:
+        db.add(DataQualityResult(submission_id=submission.id, severity=warning["severity"], code=warning["code"], field=warning.get("field"), detail=warning["detail"]))
+    if status != "Draft":
+        db.add(SubmissionReview(submission_id=submission.id, reviewer_id=user.id, from_status=None, to_status="Submitted", reason="User submission received"))
+        db.add(Alert(station_id=payload.station_id, severity="info", title="New monitoring submission", detail=f"Submission {submission.id} is awaiting administrator review."))
+        contact = db.query(UserContact).filter(UserContact.user_id == user.id).first()
+        if contact:
+            contact.last_submission_at = utc_now()
+    db.add(AuditEvent(user_id=user.id, event_type="submission.created", detail=json.dumps({"submission_id": submission.id, "status": status, "warnings": len(warnings)})))
+    db.commit()
+    db.refresh(submission)
+    return as_submission(submission)
+
+
+@router.get("/submissions/mine", response_model=SubmissionListResponse)
+def list_my_submissions(status: str | None = None, limit: int = Query(default=50, ge=1, le=200), offset: int = Query(default=0, ge=0), db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> SubmissionListResponse:
+    query = db.query(SubmissionBatch).filter(SubmissionBatch.user_id == user.id)
+    if status:
+        query = query.filter(SubmissionBatch.status == status)
+    total = query.count()
+    items = query.order_by(SubmissionBatch.created_at.desc()).offset(offset).limit(limit).all()
+    return SubmissionListResponse(items=[as_submission(item) for item in items], total=total)
+
+
+@router.get("/submissions/{submission_id}", response_model=SubmissionOut)
+def get_submission(submission_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> SubmissionOut:
+    submission = db.get(SubmissionBatch, submission_id)
+    if not submission or (submission.user_id != user.id and user.role != "admin"):
+        raise HTTPException(status_code=404, detail="Submission not found")
+    return as_submission(submission)
+
+
+@router.post("/submissions/{submission_id}/correction", response_model=SubmissionOut, status_code=201)
+def submit_correction(submission_id: str, payload: SubmissionCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> SubmissionOut:
+    original = db.get(SubmissionBatch, submission_id)
+    if not original or (original.user_id != user.id and user.role != "admin"):
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if original.status not in ("Correction Requested", "Rejected", "Draft"):
+        raise HTTPException(status_code=409, detail="Only a draft, rejected, or correction-requested submission can be corrected")
+    payload = payload.model_copy(update={"save_as_draft": False, "station_id": original.station_id, "device_id": payload.device_id or original.device_id})
+    measurement_at = _submission_datetime(payload.measurement_at)
+    warnings = _quality_warnings(payload)
+    groundwater = payload.groundwater.model_dump(exclude_none=True) if payload.groundwater else None
+    quality = payload.quality.model_dump(exclude_none=True) if payload.quality else None
+    version = (db.query(SubmissionBatch).filter(SubmissionBatch.parent_submission_id == original.id).count() + 2)
+    submission = SubmissionBatch(user_id=original.user_id, station_id=original.station_id, device_id=payload.device_id, measurement_at=measurement_at, submitted_at=utc_now(), status="Submitted", source=payload.source, measurement_method=payload.measurement_method, remarks=payload.remarks, groundwater_json=json.dumps(groundwater) if groundwater else None, quality_json=json.dumps(quality) if quality else None, validation_json=json.dumps(warnings), version=version, parent_submission_id=original.id)
+    db.add(submission)
+    db.flush()
+    db.add(SubmissionReview(submission_id=submission.id, reviewer_id=user.id, from_status=original.status, to_status="Submitted", reason="Correction submitted"))
+    db.add(Alert(station_id=original.station_id, severity="info", title="Corrected submission received", detail=f"Submission {submission.id} supersedes {original.id}."))
+    db.add(AuditEvent(user_id=user.id, event_type="submission.corrected", detail=json.dumps({"submission_id": submission.id, "parent_submission_id": original.id})))
+    db.commit()
+    db.refresh(submission)
+    return as_submission(submission)
+
+
+@router.post("/submissions/{submission_id}/attachments")
+async def upload_submission_attachment(submission_id: str, file: UploadFile = File(...), db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    submission = db.get(SubmissionBatch, submission_id)
+    if not submission or (submission.user_id != user.id and user.role != "admin"):
+        raise HTTPException(status_code=404, detail="Submission not found")
+    allowed_types = {"text/csv", "application/pdf", "text/plain", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "image/jpeg", "image/png", "image/webp"}
+    if file.content_type not in allowed_types:
+        raise HTTPException(status_code=422, detail="Only CSV, PDF, text, Excel, JPEG, PNG, or WebP attachments are allowed")
+    content = await file.read(settings.max_upload_mb * 1024 * 1024 + 1)
+    if len(content) > settings.max_upload_mb * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"Attachment exceeds {settings.max_upload_mb} MB")
+    safe_suffix = Path(file.filename or "attachment").suffix.lower()
+    if safe_suffix not in {".csv", ".pdf", ".txt", ".xls", ".xlsx"}:
+        raise HTTPException(status_code=422, detail="Unsupported attachment extension")
+    upload_dir = Path(settings.upload_dir)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    target = upload_dir / f"{submission.id}-{secrets.token_hex(8)}{safe_suffix}"
+    target.write_bytes(content)
+    attachment = SubmissionAttachment(submission_id=submission.id, filename=Path(file.filename or "attachment").name[:255], content_type=file.content_type or "application/octet-stream", size_bytes=len(content), storage_path=str(target), sha256=hashlib.sha256(content).hexdigest())
+    db.add(attachment)
+    db.add(AuditEvent(user_id=user.id, event_type="submission.attachment_uploaded", detail=json.dumps({"submission_id": submission.id, "filename": attachment.filename})))
+    db.commit()
+    return {"id": attachment.id, "filename": attachment.filename, "size_bytes": attachment.size_bytes, "status": "stored"}
+
+
+@router.get("/admin/submissions", response_model=SubmissionListResponse)
+def admin_submissions(status: str | None = None, user_id: str | None = None, station_id: str | None = None, limit: int = Query(default=100, ge=1, le=500), offset: int = Query(default=0, ge=0), db: Session = Depends(get_db), admin: User = Depends(require_admin)) -> SubmissionListResponse:
+    query = db.query(SubmissionBatch)
+    if status:
+        query = query.filter(SubmissionBatch.status == status)
+    if user_id:
+        query = query.filter(SubmissionBatch.user_id == user_id)
+    if station_id:
+        query = query.filter(SubmissionBatch.station_id == station_id)
+    total = query.count()
+    items = query.order_by(SubmissionBatch.created_at.desc()).offset(offset).limit(limit).all()
+    return SubmissionListResponse(items=[as_submission(item) for item in items], total=total)
+
+
+@router.post("/admin/submissions/{submission_id}/review", response_model=SubmissionOut)
+def review_submission(submission_id: str, payload: SubmissionReviewIn, db: Session = Depends(get_db), admin: User = Depends(require_admin)) -> SubmissionOut:
+    submission = db.get(SubmissionBatch, submission_id)
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if payload.status in ("Rejected", "Correction Requested") and not payload.reason:
+        raise HTTPException(status_code=422, detail="A reason is required for rejection or correction requests")
+    previous = submission.status
+    submission.status = payload.status
+    submission.review_feedback = payload.reason
+    submission.reviewed_by = admin.id
+    submission.reviewed_at = utc_now()
+    db.add(SubmissionReview(submission_id=submission.id, reviewer_id=admin.id, from_status=previous, to_status=payload.status, reason=payload.reason))
+    db.add(AuditEvent(user_id=admin.id, event_type="submission.reviewed", detail=json.dumps({"submission_id": submission.id, "from": previous, "to": payload.status})))
+    if payload.status == "Approved":
+        _persist_quality_and_groundwater(db, submission)
+    db.commit()
+    db.refresh(submission)
+    return as_submission(submission)
+
+
+@router.get("/admin/stats", response_model=AdminStats)
+def admin_stats(db: Session = Depends(get_db), admin: User = Depends(require_admin)) -> AdminStats:
+    total_submissions = db.query(SubmissionBatch).count()
+    return AdminStats(
+        total_users=db.query(User).count(),
+        verified_users=db.query(UserContact).filter(UserContact.email_verified.is_(True), UserContact.mobile_verified.is_(True)).count(),
+        active_stations=db.query(Station).count(),
+        total_submissions=total_submissions,
+        awaiting_review=db.query(SubmissionBatch).filter(SubmissionBatch.status.in_(["Submitted", "Under Review"])).count(),
+        approved_submissions=db.query(SubmissionBatch).filter(SubmissionBatch.status == "Approved").count(),
+        rejected_submissions=db.query(SubmissionBatch).filter(SubmissionBatch.status == "Rejected").count(),
+        failed_reminders=db.query(NotificationDelivery).filter(NotificationDelivery.status.in_(["failed", "blocked_unverified"])).count(),
+        warning_count=db.query(DataQualityResult).filter(DataQualityResult.severity != "error").count(),
+    )
+
+
+@router.get("/admin/notifications", response_model=list[NotificationDeliveryOut])
+def admin_notifications(limit: int = Query(default=100, ge=1, le=500), db: Session = Depends(get_db), admin: User = Depends(require_admin)) -> list[NotificationDelivery]:
+    return db.query(NotificationDelivery).order_by(NotificationDelivery.scheduled_at.desc()).limit(limit).all()
+
+
+@router.get("/stations", response_model=list[StationOut])
+def list_stations(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[Station]:
+    return db.query(Station).order_by(Station.name.asc()).all()
+
+
+@router.post("/stations", response_model=StationOut, status_code=201)
+def create_station(payload: StationCreate, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> Station:
+    station = Station(**payload.model_dump())
+    db.add(station)
+    db.add(AuditEvent(user_id=user.id, event_type="station.created", detail=station.name))
+    db.commit()
+    db.refresh(station)
+    return station
+
+
+@router.get("/devices", response_model=list[DeviceOut])
+def list_devices(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[Device]:
+    return db.query(Device).order_by(Device.created_at.desc()).all()
+
+
+@router.post("/devices", response_model=DeviceOut, status_code=201)
+def create_device(payload: DeviceCreate, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> Device:
+    if db.query(Device).filter(Device.device_id == payload.device_id).first():
+        raise HTTPException(status_code=409, detail="Device identifier already registered")
+    device = Device(device_id=payload.device_id, name=payload.name, device_type=payload.device_type, station_id=payload.station_id, ingest_key=payload.ingest_key or settings.device_ingest_key)
+    db.add(device)
+    db.add(AuditEvent(user_id=user.id, event_type="device.created", detail=device.device_id))
+    db.commit()
+    db.refresh(device)
+    return device
+
+
+@router.post("/ingest/http", response_model=MeasurementOut, status_code=201)
+async def ingest_http(payload: MeasurementIn, x_device_key: Annotated[str | None, Header()] = None, x_idempotency_key: Annotated[str | None, Header()] = None, db: Session = Depends(get_db)) -> Measurement:
+    device = db.query(Device).filter(Device.device_id == payload.device_id).first()
+    allowed = x_device_key and (x_device_key == settings.device_ingest_key or (device and x_device_key == device.ingest_key))
+    if not allowed:
+        raise HTTPException(status_code=401, detail="Valid device ingestion key required")
+    measurement = save_measurement_with_key(db, payload, source="http", idempotency_key=x_idempotency_key)
+    await socket_manager.broadcast({"event": "measurement.created", "measurement": MeasurementOut.model_validate(measurement).model_dump(mode="json")})
+    return measurement
+
+
+@router.post("/location/sync")
+def sync_live_location(payload: LocationSyncIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    """Update the active station so subsequent device packets carry this site snapshot."""
+    station = db.query(Station).order_by(Station.created_at.asc()).first()
+    if not station:
+        station = Station(name="Live browser site")
+        db.add(station)
+    station.latitude = payload.latitude
+    station.longitude = payload.longitude
+    station.country = payload.country or station.country
+    station.state = payload.state or station.state
+    station.district = payload.district or station.district
+    if payload.label:
+        station.description = payload.label
+    db.add(AuditEvent(user_id=user.id, event_type="location.synced", detail=json.dumps(payload.model_dump(mode="json"))))
+    db.commit()
+    return {"station_id": station.id, "latitude": station.latitude, "longitude": station.longitude, "updated_at": payload.updated_at}
+
+
+@router.get("/measurements", response_model=list[MeasurementOut])
+def list_measurements(station_id: str | None = None, status: str | None = None, limit: int = Query(default=200, ge=1, le=2000), db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[Measurement]:
+    query = db.query(Measurement)
+    if station_id:
+        query = query.filter(Measurement.station_id == station_id)
+    if status:
+        query = query.filter(Measurement.quality_status == status)
+    return query.order_by(desc(Measurement.timestamp)).limit(limit).all()
+
+
+@router.get("/measurements/live-preview", response_model=list[MeasurementOut])
+def live_measurements_preview(limit: int = Query(default=20, ge=1, le=100), db: Session = Depends(get_db)) -> list[Measurement]:
+    """Development-only bridge visibility for the local preview session.
+
+    Production clients must use the authenticated /api/measurements route.
+    """
+    if settings.app_env != "development":
+        raise HTTPException(status_code=404, detail="Live preview is disabled outside development")
+    return db.query(Measurement).filter(Measurement.source == "http").order_by(desc(Measurement.timestamp)).limit(limit).all()
+
+
+@router.get("/admin/measurements", response_model=list[MeasurementOut])
+def admin_measurements(status: str = "pending_review", limit: int = Query(default=200, ge=1, le=2000), db: Session = Depends(get_db), admin: User = Depends(require_admin)) -> list[Measurement]:
+    return db.query(Measurement).filter(Measurement.quality_status == status).order_by(desc(Measurement.timestamp)).limit(limit).all()
+
+
+@router.get("/admin/measurements/live-preview", response_model=list[MeasurementOut])
+def admin_measurements_preview(status: str = "pending_review", limit: int = Query(default=40, ge=1, le=100), db: Session = Depends(get_db)) -> list[Measurement]:
+    if settings.app_env != "development":
+        raise HTTPException(status_code=404, detail="Admin preview is disabled outside development")
+    return db.query(Measurement).filter(Measurement.quality_status == status).order_by(desc(Measurement.timestamp)).limit(limit).all()
+
+
+@router.post("/admin/measurements/{measurement_id}/review", response_model=MeasurementOut)
+def review_measurement(measurement_id: str, payload: SubmissionReviewIn, db: Session = Depends(get_db), admin: User = Depends(require_admin)) -> Measurement:
+    if payload.status not in {"Approved", "Rejected"}:
+        raise HTTPException(status_code=422, detail="Live readings can only be approved or rejected")
+    measurement = db.get(Measurement, measurement_id)
+    if not measurement:
+        raise HTTPException(status_code=404, detail="Measurement not found")
+    measurement.quality_status = "reviewed" if payload.status == "Approved" else "rejected"
+    pending_title = f"Device review required · {measurement.device_id}"
+    pending_alerts = db.query(Alert).filter(Alert.title == pending_title, Alert.state == "active").all()
+    for alert in pending_alerts:
+        alert.state = "resolved"
+        alert.resolved_at = utc_now()
+    db.add(Alert(station_id=measurement.station_id, severity="info", title=f"Device reading {payload.status.lower()} · {measurement.device_id}", detail=f"Measurement {measurement.id} was {payload.status.lower()} by the administrator."))
+    db.add(AuditEvent(user_id=admin.id, event_type="measurement.reviewed", detail=json.dumps({"measurement_id": measurement.id, "status": payload.status, "reason": payload.reason})))
+    db.commit()
+    db.refresh(measurement)
+    return measurement
+
+
+@router.post("/admin/measurements/live-preview/{measurement_id}/review", response_model=MeasurementOut)
+def review_measurement_preview(measurement_id: str, payload: SubmissionReviewIn, db: Session = Depends(get_db)) -> Measurement:
+    if settings.app_env != "development":
+        raise HTTPException(status_code=404, detail="Admin preview is disabled outside development")
+    measurement = db.get(Measurement, measurement_id)
+    if not measurement:
+        raise HTTPException(status_code=404, detail="Measurement not found")
+    if payload.status not in {"Approved", "Rejected"}:
+        raise HTTPException(status_code=422, detail="Live readings can only be approved or rejected")
+    measurement.quality_status = "reviewed" if payload.status == "Approved" else "rejected"
+    pending_title = f"Device review required · {measurement.device_id}"
+    for alert in db.query(Alert).filter(Alert.title == pending_title, Alert.state == "active").all():
+        alert.state = "resolved"
+        alert.resolved_at = utc_now()
+    db.add(Alert(station_id=measurement.station_id, severity="info", title=f"Device reading {payload.status.lower()} · {measurement.device_id}", detail=f"Measurement {measurement.id} was {payload.status.lower()} in development preview."))
+    db.commit()
+    db.refresh(measurement)
+    return measurement
+
+
+@router.post("/quality", response_model=QualityObservationOut, status_code=201)
+def create_quality(payload: QualityObservationIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> QualityObservation:
+    values = payload.model_dump()
+    wqi, classification, missing = calculate_wqi(values)
+    observation = QualityObservation(**values, wqi=wqi, classification=classification, data_quality="partial" if missing else "valid")
+    db.add(observation)
+    db.add(AuditEvent(user_id=user.id, event_type="quality.created", detail=json.dumps({"station_id": payload.station_id, "missing": missing})))
+    db.commit()
+    db.refresh(observation)
+    return observation
+
+
+@router.get("/quality", response_model=list[QualityObservationOut])
+def list_quality(station_id: str | None = None, limit: int = Query(default=200, ge=1, le=2000), db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[QualityObservation]:
+    query = db.query(QualityObservation)
+    if station_id:
+        query = query.filter(QualityObservation.station_id == station_id)
+    return query.order_by(desc(QualityObservation.measured_at)).limit(limit).all()
+
+
+@router.post("/imports/inspect")
+async def inspect_dataset(file: UploadFile = File(...), user: User = Depends(require_admin)) -> dict:
+    if not file.filename or not file.filename.lower().endswith((".csv", ".tsv")):
+        raise HTTPException(status_code=422, detail="Upload a CSV or TSV dataset")
+    content = await file.read()
+    try:
+        import pandas as pd
+
+        separator = "\t" if file.filename.lower().endswith(".tsv") else ","
+        frame = pd.read_csv(io.BytesIO(content), sep=separator, nrows=5000)
+        columns = [str(column) for column in frame.columns]
+        lower_columns = {column.lower(): column for column in columns}
+        datetime_candidates = [column for column in columns if any(token in column.lower() for token in ("date", "time", "timestamp"))]
+        station_candidates = [column for column in columns if any(token in column.lower() for token in ("station", "well", "site", "location"))]
+        level_candidates = [column for column in columns if any(token in column.lower() for token in ("water_level", "groundwater", "depth", "level"))]
+        return {"filename": file.filename, "sample_rows": len(frame), "columns": columns, "datetime_candidates": datetime_candidates, "station_candidates": station_candidates, "groundwater_candidates": level_candidates, "missing_values": {str(key): int(value) for key, value in frame.isna().sum().items()}, "note": "Inspection only. Confirm mappings before importing observations."}
+    except Exception as error:
+        raise HTTPException(status_code=422, detail=f"Could not inspect dataset: {error}") from error
+
+
+@router.get("/dashboard", response_model=DashboardResponse)
+def dashboard(station_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> DashboardResponse:
+    # Only reviewed readings are official analytics. Demo and raw live device
+    # readings stay out of the official dashboard until an administrator approves them.
+    measurement_query = db.query(Measurement).filter(Measurement.quality_status == "reviewed")
+    quality_query = db.query(QualityObservation)
+    if station_id:
+        measurement_query = measurement_query.filter(Measurement.station_id == station_id)
+        quality_query = quality_query.filter(QualityObservation.station_id == station_id)
+    measurements = measurement_query.order_by(desc(Measurement.timestamp)).limit(500).all()
+    latest = measurements[0] if measurements else None
+    latest_quality = quality_query.order_by(desc(QualityObservation.measured_at)).first()
+    levels = [item.water_level_percent for item in reversed(measurements) if item.water_level_percent is not None]
+    forecast = fallback_forecast(levels) if levels else None
+    alerts = db.query(Alert).filter(Alert.state != "resolved").order_by(desc(Alert.created_at)).limit(5).all()
+    online = db.query(Device).filter(Device.status == "online").count()
+    approved_count = db.query(Measurement).filter(Measurement.quality_status == "reviewed").count()
+    return DashboardResponse(status="online" if online else "offline", measurement_count=approved_count, station_count=db.query(Station).count(), device_count=db.query(Device).count(), online_devices=online, latest_measurement=MeasurementOut.model_validate(latest) if latest else None, latest_quality=QualityObservationOut.model_validate(latest_quality) if latest_quality else None, active_alerts=[AlertOut.model_validate(alert) for alert in alerts], forecast=forecast, limitations=["Only administrator-approved readings enter official dashboard analytics.", "Forecast is a transparent trend fallback until a compatible trained groundwater artifact is configured.", "Water quality screening does not certify potability or detect all contaminants."])
+
+
+@router.get("/alerts", response_model=list[AlertOut])
+def list_alerts(state: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[Alert]:
+    query = db.query(Alert)
+    if state:
+        query = query.filter(Alert.state == state)
+    return query.order_by(desc(Alert.created_at)).limit(500).all()
+
+
+@router.get("/alerts/live-preview", response_model=list[AlertOut])
+def live_alerts_preview(db: Session = Depends(get_db)) -> list[Alert]:
+    if settings.app_env != "development":
+        raise HTTPException(status_code=404, detail="Alert preview is disabled outside development")
+    return db.query(Alert).filter(Alert.state != "resolved").order_by(desc(Alert.created_at)).limit(100).all()
+
+
+@router.patch("/alerts/{alert_id}", response_model=AlertOut)
+def update_alert(alert_id: str, payload: AlertStateUpdate, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> Alert:
+    alert = db.get(Alert, alert_id)
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    alert.state = payload.state
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if payload.state == "acknowledged":
+        alert.acknowledged_at = now
+    if payload.state == "resolved":
+        alert.resolved_at = now
+    db.commit()
+    db.refresh(alert)
+    return alert
+
+
+@router.post("/advisor", response_model=AdvisorResponse)
+def advisor(payload: AdvisorRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> AdvisorResponse:
+    question = payload.question.lower()
+    latest = db.query(Measurement).order_by(desc(Measurement.timestamp)).first()
+    quality = db.query(QualityObservation).order_by(desc(QualityObservation.measured_at)).first()
+    active = db.query(Alert).filter(Alert.state != "resolved").count()
+    if "wqi" in question or "quality" in question:
+        answer = f"The latest available quality screening is {quality.classification or 'not classified'} with WQI {quality.wqi if quality and quality.wqi is not None else 'unavailable'}. This is a screening result, not a potability certificate." if quality else "No water-quality observation is stored yet. Add a manual or laboratory observation to calculate WQI."
+        links = ["/quality", "/reports"]
+    elif "alert" in question:
+        answer = f"There are {active} unresolved alerts. Review their severity, evidence and station before taking action." 
+        links = ["/alerts"]
+    elif "level" in question or "groundwater" in question or "fall" in question:
+        answer = f"The latest stored groundwater reading is {latest.water_level_percent if latest and latest.water_level_percent is not None else 'unavailable'}% level. Forecasts use the transparent fallback unless a trained artifact is configured." if latest else "No groundwater readings are stored yet. Register a device or import a dataset."
+        links = ["/groundwater", "/history"]
+    elif "conserve" in question:
+        answer = "Prioritize leak checks, stagger pumping, record daily levels, protect recharge areas and investigate rapid declines before increasing extraction."
+        links = ["/education", "/groundwater"]
+    else:
+        answer = "I can answer about current groundwater status, WQI, alerts, forecast meaning and conservation using the data currently stored in HydroInsight."
+        links = ["/dashboard", "/advisor"]
+    return AdvisorResponse(answer=answer, sources=["Stored measurements", "Stored quality observations", "Transparent fallback logic"], links=links)
+
+
+@router.get("/reports/measurements.csv")
+def measurements_csv(station_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> StreamingResponse:
+    query = db.query(Measurement)
+    if station_id:
+        query = query.filter(Measurement.station_id == station_id)
+    rows = query.order_by(Measurement.timestamp.asc()).all()
+    stream = io.StringIO()
+    writer = csv.writer(stream)
+    writer.writerow(["device_id", "station_id", "timestamp", "distance_cm", "water_level_percent", "water_depth_cm", "temperature_c", "source", "quality_status"])
+    for row in rows:
+        writer.writerow([row.device_id, row.station_id, row.timestamp.isoformat(), row.distance_cm, row.water_level_percent, row.water_depth_cm, row.temperature_c, row.source, row.quality_status])
+    return StreamingResponse(iter([stream.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=hydroinsight-measurements.csv"})
+
+
+@router.get("/reports/summary.pdf")
+def summary_pdf(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> StreamingResponse:
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+    except ImportError as error:
+        raise HTTPException(status_code=503, detail="PDF export requires reportlab; install backend requirements") from error
+    stream = io.BytesIO()
+    document = canvas.Canvas(stream, pagesize=A4)
+    document.setTitle("HydroInsight monitoring summary")
+    document.drawString(50, 800, "HydroInsight monitoring summary")
+    document.drawString(50, 780, f"Generated: {datetime.now(timezone.utc).isoformat()}")
+    document.drawString(50, 750, f"Stations: {db.query(Station).count()}   Devices: {db.query(Device).count()}   Measurements: {db.query(Measurement).count()}")
+    document.drawString(50, 720, "Forecast model: transparent-fallback (not a trained model output)")
+    document.drawString(50, 700, "Quality limitation: measured inputs do not certify potability or detect all contaminants.")
+    document.save()
+    stream.seek(0)
+    return StreamingResponse(stream, media_type="application/pdf", headers={"Content-Disposition": "attachment; filename=hydroinsight-summary.pdf"})
+
+
+@router.websocket("/ws/measurements")
+async def measurements_socket(websocket: WebSocket) -> None:
+    await socket_manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        socket_manager.disconnect(websocket)
+
