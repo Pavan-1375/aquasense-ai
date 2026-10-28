@@ -105,3 +105,5 @@ The backend health endpoint is `http://127.0.0.1:8000/api/health`; the frontend 
 
 `npm run publish` runs the frontend build, Python compilation, backend tests, commits all tracked changes, and pushes the current branch to the configured `origin`. It refuses to run until the project has a GitHub `origin`, so an unrelated repository cannot be overwritten accidentally.
 
+After configuring the exact repository, run `npm run enable:auto-publish` once to make regular Git commits push automatically through the guarded post-commit hook.
+

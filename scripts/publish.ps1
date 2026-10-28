@@ -19,11 +19,11 @@ if (-not $SkipChecks) {
 }
 
 git add -A
-if (git diff --cached --quiet) {
-  Write-Host 'No changes to commit.'
-  exit 0
+if (-not (git diff --cached --quiet)) {
+  git commit -m $CommitMessage
+} else {
+  Write-Host 'No changes to commit; pushing the current branch.'
 }
-git commit -m $CommitMessage
 $branch = git branch --show-current
 if (-not $branch) { $branch = 'main'; git branch -M $branch }
 git push -u origin $branch
