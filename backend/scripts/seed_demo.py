@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import random
+import os
 import sys
 
 sys.path.insert(0, "backend")
@@ -12,6 +13,9 @@ from app.services.reminders import ensure_schedule
 
 
 def seed() -> None:
+    demo_key = os.environ.get("DEVICE_INGEST_KEY")
+    if not demo_key:
+        raise RuntimeError("Set DEVICE_INGEST_KEY before seeding demo data")
     init_db()
     db = SessionLocal()
     try:
@@ -33,7 +37,7 @@ def seed() -> None:
             db.flush()
         device = db.query(Device).filter(Device.device_id == "ESP32-DEMO-001").first()
         if not device:
-            device = Device(device_id="ESP32-DEMO-001", name="Demo ultrasonic level sensor", station_id=station.id, ingest_key="local-device-key", status="online", last_seen_at=datetime.now(timezone.utc).replace(tzinfo=None))
+            device = Device(device_id="ESP32-DEMO-001", name="Demo ultrasonic level sensor", station_id=station.id, ingest_key=demo_key, status="online", last_seen_at=datetime.now(timezone.utc).replace(tzinfo=None))
             db.add(device)
             db.flush()
         if db.query(Measurement).filter(Measurement.device_id == device.device_id).count() == 0:

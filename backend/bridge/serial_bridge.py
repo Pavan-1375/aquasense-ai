@@ -84,7 +84,7 @@ def main() -> int:
     parser.add_argument("--port", required=True)
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--endpoint", default="http://127.0.0.1:8000/api/ingest/http")
-    parser.add_argument("--device-key", default="local-device-key")
+    parser.add_argument("--device-key", required=True, help="Device ingest key; never use a hardcoded production key")
     parser.add_argument("--device-id", default="ESP32-001")
     parser.add_argument("--min-interval", type=float, default=0.25, help="Minimum seconds between forwarded readings (250ms default)")
     args = parser.parse_args()

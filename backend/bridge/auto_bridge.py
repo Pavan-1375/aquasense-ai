@@ -37,7 +37,7 @@ def matching_ports() -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description='Automatically reconnect an ESP32 serial bridge')
     parser.add_argument('--endpoint', default='http://127.0.0.1:8000/api/ingest/http')
-    parser.add_argument('--device-key', default='local-device-key')
+    parser.add_argument('--device-key', required=True, help='Device ingest key; provide it explicitly')
     parser.add_argument('--device-id', default='ESP32-001')
     parser.add_argument('--baud', type=int, default=115200)
     parser.add_argument('--min-interval', type=float, default=0.25)
