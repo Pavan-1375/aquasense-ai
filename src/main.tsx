@@ -63,7 +63,7 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import './styles.css'
 
-type Page = 'overview' | 'live' | 'quality' | 'level' | 'advisor' | 'history' | 'devices' | 'alerts' | 'map' | 'reports' | 'education' | 'settings' | 'help' | 'profile' | 'admin' | 'submit' | 'submissions' | 'notifications'
+type Page = 'overview' | 'live' | 'quality' | 'level' | 'advisor' | 'history' | 'devices' | 'alerts' | 'map' | 'reports' | 'education' | 'settings' | 'help' | 'profile' | 'admin' | 'submit' | 'submissions' | 'notifications' | 'privacy' | 'terms'
 type Status = 'within' | 'marginal' | 'exceeds'
 type Theme = 'dark' | 'light'
 type Role = 'admin' | 'user'
@@ -329,6 +329,7 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
   const [updates, setUpdates] = useState<QualityUpdate[]>(() => readStorage<QualityUpdate[]>('quality-updates', []))
   const [apiStatus, setApiStatus] = useState<'checking' | 'online' | 'offline'>('checking')
   const [dashboard, setDashboard] = useState<DashboardSnapshot | null>(null)
+  const [consent, setConsent] = useState(() => readStorage<boolean | null>('privacy-consent', null))
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -513,11 +514,14 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
           {page === 'education' && <EducationPage />}
           {page === 'settings' && <SettingsPageV2 account={currentAccount} theme={theme} onThemeChange={setTheme} location={location} geoStatus={geoStatus} requestLocation={requestLocation} onSignOut={onSignOut} />}
           {page === 'help' && <HelpPage />}
+          {page === 'privacy' && <PolicyPage kind="privacy" />}
+          {page === 'terms' && <PolicyPage kind="terms" />}
           {page === 'profile' && <ProfilePage account={currentAccount} onAccountUpdate={onAccountUpdate} />}
           {page === 'admin' && (currentAccount.role === 'admin' ? <AdminPage accounts={accounts} /> : <AccessDeniedPage />)}
         </div>
       </main>
       {themePromptOpen && <ThemePreferenceModal onChoose={(nextTheme) => { setTheme(nextTheme); setThemePromptOpen(false) }} />}
+      {consent === null && <div className="consent-banner"><strong>Privacy choices</strong><span>AquaSense uses essential storage for sign-in, theme and monitoring workflow. We do not sell customer data or use it to train AI models.</span><button className="button ghost small" onClick={() => { writeStorage('privacy-consent', false); setConsent(false) }}>Essential only</button><button className="button primary small" onClick={() => { writeStorage('privacy-consent', true); setConsent(true) }}>Accept</button><button className="text-button" onClick={() => navigate('privacy')}>Privacy policy</button></div>}
     </div>
   )
 }
@@ -1027,6 +1031,11 @@ function EducationPage() {
 
 function HelpPage() {
   return <><PageHeader eyebrow="Support · documentation" title="Help and support" description="Setup guidance for the frontend, FastAPI backend, datasets and ESP32 serial bridge." /><div className="module-grid two"><section className="panel module-card"><div className="panel-heading"><div><div className="eyebrow">Quick start</div><h2>Run the full stack</h2></div></div><ol className="help-list"><li>Run <span className="mono">npm run dev</span> for the frontend.</li><li>Install <span className="mono">py -3 -m pip install -r backend/requirements.txt</span>.</li><li>Run <span className="mono">py -3 -m uvicorn app.main:app --reload --app-dir backend</span>.</li><li>Open <span className="mono">http://127.0.0.1:8000/docs</span> for API documentation.</li></ol></section><section className="panel module-card"><div className="panel-heading"><div><div className="eyebrow">Troubleshooting</div><h2>Common states</h2></div></div><div className="help-item"><strong>Hardware offline</strong><span>Register a device and run the serial bridge; no offline preview is presented as live.</span></div><div className="help-item"><strong>Location denied</strong><span>Use the map search or explicit point selection to attach a site to the test.</span></div><div className="help-item"><strong>Dataset import</strong><span>Run the importer to inspect columns before mapping date, station and level fields.</span></div></section></div></>
+}
+
+function PolicyPage({ kind }: { kind: 'privacy' | 'terms' }) {
+  const privacy = kind === 'privacy'
+  return <><PageHeader eyebrow="Legal · review required" title={privacy ? 'Privacy policy' : 'Terms of service'} description="Draft product notice for academic/project deployment. Obtain legal review before production use." /><section className="panel module-card policy-copy"><h2>{privacy ? 'How AquaSense handles data' : 'Using AquaSense responsibly'}</h2><p>AquaSense stores account details, approved monitoring submissions, optional proof attachments, device diagnostics and site coordinates only to operate the monitoring workflow.</p><h3>Choices and rights</h3><p>You can choose essential-only cookies, export your account data, request deletion, and withdraw optional reminders or marketing contact. Data is not sold and customer data is not used to train external AI models.</p><h3>Retention and safety</h3><p>Project operators must configure retention limits, backups, access roles and deletion schedules. Health, drinking-water and regulatory decisions require laboratory verification.</p><h3>Third parties and accessibility</h3><p>Maps use OpenStreetMap, Esri, OpenTopoMap and Nominatim where enabled. Review their terms and licence obligations. AI-generated summaries are labelled and should be checked by a human.</p><p className="setting-note">Business contact, jurisdiction, refund language, parental-consent handling, DPAs and statutory registration requirements must be completed by the deploying organisation and reviewed by qualified counsel.</p></section></>
 }
 
 function ProfilePage({ account, onAccountUpdate }: { account: Account; onAccountUpdate: (patch: Partial<Account>) => void }) {
