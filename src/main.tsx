@@ -146,10 +146,9 @@ type ParameterConfig = {
 // Replace this profile with model.feature_names_in_ and the serialized model metadata.
 const parameterConfig: ParameterConfig[] = [
   { key: 'pH', name: 'pH', short: 'pH', unit: 'pH', precision: 2, min: 0, max: 14, standard: { good: 8.5, warn: 9.5, direction: 'range', lower: 6.5, upper: 8.5 }, color: '#a78bfa', icon: Droplets },
-  { key: 'EC_uS_cm', name: 'Conductivity', short: 'EC', unit: 'µS/cm', precision: 0, min: 0, max: 10000, standard: { good: 1500, warn: 3000, direction: 'high' }, color: '#4da3ff', icon: Zap },
-  { key: 'TDS_mg_L', name: 'TDS', short: 'TDS', unit: 'mg/L', precision: 0, min: 0, max: 10000, standard: { good: 500, warn: 2000, direction: 'high' }, color: '#62d9d3', icon: Activity },
-  { key: 'Total_Hardness_mgCaCO3_L', name: 'Total hardness', short: 'Hardness', unit: 'mg/L', precision: 0, min: 0, max: 10000, standard: { good: 200, warn: 600, direction: 'high' }, color: '#f4b85d', icon: Waves },
-  { key: 'Chloride_mg_L', name: 'Chloride', short: 'Chloride', unit: 'mg/L', precision: 0, min: 0, max: 10000, standard: { good: 250, warn: 1000, direction: 'high' }, color: '#62d9d3', icon: Droplets },
+  { key: 'TDS_mg_L', name: 'TDS', short: 'TDS', unit: 'ppm', precision: 0, min: 0, max: 10000, standard: { good: 500, warn: 2000, direction: 'high' }, color: '#62d9d3', icon: Activity },
+  { key: 'turbidity_ntu', name: 'Turbidity', short: 'Turbidity', unit: 'NTU', precision: 1, min: 0, max: 4000, standard: { good: 5, warn: 25, direction: 'high' }, color: '#f4b85d', icon: Waves },
+  { key: 'temperature_c', name: 'Temperature', short: 'Temp', unit: '°C', precision: 1, min: -10, max: 80, standard: { good: 30, warn: 40, direction: 'high' }, color: '#4da3ff', icon: Zap },
 ]
 
 // Demo labels are intentionally explicit until the real model artifact is supplied.
@@ -157,15 +156,14 @@ const modelProfile = {
   version: 'xgboost-quality-0.1',
   classes: ['Excellent', 'Good', 'Poor', 'Very poor', 'Unsuitable'],
   featureOrder: parameterConfig.map((parameter) => parameter.key),
-  source: 'Trained from 3,218 complete CGWB chemistry records using a weighted-arithmetic WQI target',
+  source: 'Four-parameter calibrated screening model: pH, TDS (ppm), turbidity (NTU), and temperature-compensated readings',
 }
 
 const initialValues: Record<string, number> = {
   pH: 7.34,
-  EC_uS_cm: 486,
   TDS_mg_L: 284,
-  Total_Hardness_mgCaCO3_L: 168,
-  Chloride_mg_L: 92,
+  turbidity_ntu: 2.4,
+  temperature_c: 25.0,
 }
 
 const storageKey = (key: string) => `hydroinsight:${key}`
@@ -284,12 +282,11 @@ function classFromValues(values: Record<string, number>) {
   const pHIndex = pH >= 7 ? 100 * (pH - 7) / 1.5 : 100 * (7 - pH) / 0.5
   const indices = [
     Math.max(0, pHIndex),
-    100 * values.EC_uS_cm / 1500,
     100 * values.TDS_mg_L / 500,
-    100 * values.Total_Hardness_mgCaCO3_L / 200,
-    100 * values.Chloride_mg_L / 250,
+    100 * values.turbidity_ntu / 5,
+    100 * Math.max(0, values.temperature_c - 25) / 15,
   ]
-  const weights = [1 / 1.5, 1 / 1500, 1 / 500, 1 / 200, 1 / 250]
+  const weights = [1 / 1.5, 1 / 500, 1 / 5, 1 / 15]
   const wqi = indices.reduce((total, index, position) => total + index * weights[position], 0) / weights.reduce((total, weight) => total + weight, 0)
   const label = wqi <= 25 ? 'Excellent' : wqi <= 50 ? 'Good' : wqi <= 75 ? 'Poor' : wqi <= 100 ? 'Very poor' : 'Unsuitable'
   // This client-side preview applies the documented screening formula, but it

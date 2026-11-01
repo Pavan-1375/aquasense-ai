@@ -23,26 +23,23 @@ except ImportError:
 
 FEATURE_COLUMNS = [
     "pH",
-    "EC_uS_cm",
     "TDS_mg_L",
-    "Total_Hardness_mgCaCO3_L",
-    "Chloride_mg_L",
+    "Turbidity_NTU",
+    "Temperature_C",
 ]
 
 SOURCE_COLUMNS = {
     "pH": "Potential of Hydrogen (pH)",
-    "EC_uS_cm": "Electric Conductivity (μS/cm)",
     "TDS_mg_L": "Total Dissolved Solids (mg/L)",
-    "Total_Hardness_mgCaCO3_L": "Total Hardness (mgCaCO3/L)",
-    "Chloride_mg_L": "Chloride (mg/L)",
+    "Turbidity_NTU": "Turbidity (NTU)",
+    "Temperature_C": "Temperature (°C)",
 }
 
 LIMITS = {
     "pH": {"ideal": 7.0, "lower": 6.5, "upper": 8.5, "weight_limit": 1.5},
-    "EC_uS_cm": {"ideal": 0.0, "upper": 1500.0, "weight_limit": 1500.0},
     "TDS_mg_L": {"ideal": 0.0, "upper": 500.0, "weight_limit": 500.0},
-    "Total_Hardness_mgCaCO3_L": {"ideal": 0.0, "upper": 200.0, "weight_limit": 200.0},
-    "Chloride_mg_L": {"ideal": 0.0, "upper": 250.0, "weight_limit": 250.0},
+    "Turbidity_NTU": {"ideal": 0.0, "upper": 5.0, "weight_limit": 5.0},
+    "Temperature_C": {"ideal": 25.0, "upper": 40.0, "weight_limit": 15.0},
 }
 
 CLASS_BANDS = [0.0, 25.0, 50.0, 75.0, 100.0, float("inf")]
@@ -64,8 +61,7 @@ def load_quality_data(paths: list[Path]) -> pd.DataFrame:
         combined[column] = pd.to_numeric(combined[column], errors="coerce")
     complete = combined.dropna(subset=FEATURE_COLUMNS).copy()
     complete = complete[(complete["pH"] >= 0) & (complete["pH"] <= 14)]
-    complete = complete[(complete["EC_uS_cm"] >= 0) & (complete["TDS_mg_L"] >= 0)]
-    complete = complete[(complete["Total_Hardness_mgCaCO3_L"] >= 0) & (complete["Chloride_mg_L"] >= 0)]
+    complete = complete[(complete["TDS_mg_L"] >= 0) & (complete["Turbidity_NTU"] >= 0)]
     return complete
 
 

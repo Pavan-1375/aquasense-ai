@@ -14,10 +14,8 @@ class StandardLimit:
 SCREENING_PROFILE = {
     "ph": StandardLimit(7.0, 8.5, 1.0),
     "tds_mg_l": StandardLimit(0.0, 500.0, 1.0),
-    "ec_us_cm": StandardLimit(0.0, 1500.0, 0.8),
     "turbidity_ntu": StandardLimit(0.0, 5.0, 1.0),
-    "hardness_mg_l": StandardLimit(0.0, 200.0, 0.8),
-    "chloride_mg_l": StandardLimit(0.0, 250.0, 0.8),
+    "temperature_c": StandardLimit(25.0, 40.0, 0.5),
 }
 
 
