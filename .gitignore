@@ -12,4 +12,5 @@ backend/.env
 *.tmp
 *.pyc
 *.zip
+archify-test/
 

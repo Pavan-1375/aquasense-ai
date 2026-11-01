@@ -323,7 +323,7 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
   const [isLive, setIsLive] = useState(false)
   const [lastUpdated, setLastUpdated] = useState('12 sec ago')
   const [mobileNav, setMobileNav] = useState(false)
-  const [theme, setTheme] = useState<Theme>(() => readStorage<Theme>('theme', 'dark'))
+  const [theme, setTheme] = useState<Theme>(() => readStorage<Theme>('theme', 'light'))
   const [themePromptOpen, setThemePromptOpen] = useState(() => !window.localStorage.getItem(storageKey('theme')))
   const [accountOpen, setAccountOpen] = useState(false)
   const [location, setLocation] = useState<LiveLocation | null>(() => currentAccount.lastLocation)
