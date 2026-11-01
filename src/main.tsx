@@ -1171,17 +1171,8 @@ function AuthScreen({ accounts, onAuthenticated }: { accounts: Account[]; onAuth
       onAuthenticated(account, nextAccounts)
       return
     } catch (backendError) {
-      if (!(backendError instanceof TypeError)) {
-        setError(backendError instanceof Error ? backendError.message : 'Unable to sign in to the backend.')
-        return
-      }
+      setError(backendError instanceof TypeError ? 'Backend is unavailable. Start FastAPI before signing in.' : backendError instanceof Error ? backendError.message : 'Unable to sign in to the backend.')
     }
-    const account = accounts.find((candidate) => candidate.email === normalizedEmail && candidate.password === password)
-    if (!account) {
-      setError('Email or password is incorrect.')
-      return
-    }
-    onAuthenticated(account)
   }
 
   const switchMode = (nextMode: AuthMode) => {

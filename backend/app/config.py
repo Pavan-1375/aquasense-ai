@@ -28,6 +28,10 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=(".env", "backend/.env"), extra="ignore")
 
+    def validate_production_secrets(self) -> None:
+        if self.app_env.lower() == "production" and (self.secret_key == "development-only-change-me" or self.device_ingest_key == "local-device-key"):
+            raise RuntimeError("Production requires non-default SECRET_KEY and DEVICE_INGEST_KEY")
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
@@ -35,5 +39,7 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    settings.validate_production_secrets()
+    return settings
 

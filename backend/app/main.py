@@ -18,7 +18,7 @@ from .services.rate_limit import limiter
 settings = get_settings()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s request_id=%(request_id)s %(message)s")
 logger = logging.getLogger("aquasense.api")
-app = FastAPI(title="AquaSense AI API", version="0.1.0", description="Validated water-quality and groundwater monitoring API")
+app = FastAPI(title="AquaSense AI API", version="0.1.0", description="Validated water-quality and groundwater monitoring API", docs_url=None if settings.app_env.lower() == "production" else "/docs", redoc_url=None if settings.app_env.lower() == "production" else "/redoc", openapi_url=None if settings.app_env.lower() == "production" else "/openapi.json")
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(router)
 reminder_task: asyncio.Task | None = None
@@ -41,6 +41,10 @@ async def request_context(request: Request, call_next):
         logger.exception("Unhandled request failure", extra={"request_id": request_id})
         raise
     response.headers["X-Request-ID"] = request_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if settings.app_env.lower() == "production": response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     logger.info("%s %s -> %s in %.1fms", request.method, request.url.path, response.status_code, (perf_counter() - started) * 1000, extra={"request_id": request_id})
     return response
 
