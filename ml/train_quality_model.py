@@ -161,7 +161,7 @@ def train(paths: list[Path], output_dir: Path) -> dict[str, Any]:
         "feature_order": FEATURE_COLUMNS,
         "classes": CLASS_LABELS,
         "class_mapping": {str(index): label for label, index in class_to_id.items()},
-        "formula": "Weighted arithmetic WQI over pH, EC, TDS, total hardness, and chloride",
+        "formula": "Weighted arithmetic screening score over pH, TDS, turbidity, and temperature",
         "limits": LIMITS,
         "source_columns": SOURCE_COLUMNS,
     }
@@ -180,8 +180,7 @@ def train(paths: list[Path], output_dir: Path) -> dict[str, Any]:
         "metrics": metrics,
         "limitations": [
             "Labels are derived from the documented screening formula, not clinician- or regulator-confirmed classes.",
-            "The source data has no temperature or turbidity measurements.",
-            "The source files have sparse TDS and hardness values; complete-row training reduces coverage.",
+            "The supplied CGWB chemistry files are not compatible with this four-parameter contract because they do not provide turbidity and temperature.",
             "The result is not a potability certification and does not include microbiological testing.",
         ],
     }

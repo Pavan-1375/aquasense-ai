@@ -462,7 +462,7 @@ def _persist_quality_and_groundwater(db: Session, submission: SubmissionBatch) -
             source="user-submission",
             data_quality="partial" if missing else "valid",
         ))
-    db.add(ModelExecutionRecord(submission_id=submission.id, model_name="quality-screening", model_version="xgboost-quality-0.1", status="completed", input_json=submission.quality_json, output_json=json.dumps({"classification": classification if quality else None})))
+    db.add(ModelExecutionRecord(submission_id=submission.id, model_name="quality-screening", model_version="screening-wqi-0.2", status="completed", input_json=submission.quality_json, output_json=json.dumps({"classification": classification if quality else None})))
 
 
 @router.post("/submissions", response_model=SubmissionOut, status_code=201)

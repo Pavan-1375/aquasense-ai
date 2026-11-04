@@ -7,9 +7,16 @@ import joblib
 import numpy as np
 import pandas as pd
 
+ACTIVE_FEATURE_ORDER = ["pH", "TDS_mg_L", "Turbidity_NTU", "Temperature_C"]
+
 
 def validate_feature_vector(payload: dict[str, Any], artifact: dict[str, Any]) -> list[float]:
     expected = artifact["feature_order"]
+    if expected != ACTIVE_FEATURE_ORDER:
+        raise ValueError(
+            "Quality model artifact is incompatible with the active four-parameter contract. "
+            f"Artifact={expected}; expected={ACTIVE_FEATURE_ORDER}. Retrain the model with the active dataset."
+        )
     missing = [name for name in expected if name not in payload]
     extra = [name for name in payload if name not in expected]
     if missing or extra:
@@ -20,7 +27,9 @@ def validate_feature_vector(payload: dict[str, Any], artifact: dict[str, Any]) -
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value):
             raise ValueError(f"Feature {name} must be a finite numeric value")
         limits = artifact["limits"][name]
-        lower = limits.get("lower", 0.0)
+        # Readings outside the preferred guideline range must still be classified and
+        # flagged. Only impossible sensor values are rejected at this layer.
+        lower = limits.get("sensor_lower", 0.0)
         upper = limits.get("upper", 1e12)
         if value < lower or value > upper * 20:
             raise ValueError(f"Feature {name}={value} is outside the accepted sensor range")

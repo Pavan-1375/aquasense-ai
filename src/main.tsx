@@ -153,7 +153,7 @@ const parameterConfig: ParameterConfig[] = [
 
 // Demo labels are intentionally explicit until the real model artifact is supplied.
 const modelProfile = {
-  version: 'xgboost-quality-0.1',
+  version: 'screening-wqi-0.2',
   classes: ['Excellent', 'Good', 'Poor', 'Very poor', 'Unsuitable'],
   featureOrder: parameterConfig.map((parameter) => parameter.key),
   source: 'Four-parameter calibrated screening model: pH, TDS (ppm), turbidity (NTU), and temperature-compensated readings',
