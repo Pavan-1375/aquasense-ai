@@ -188,7 +188,10 @@ function writeStorage(key: string, value: unknown) {
 function persistedAccounts(accounts: Account[]) { return accounts }
 
 async function backendAuth(endpoint: 'signup' | 'signin', payload: Record<string, string>) {
-  const response = await fetch(`${backendUrl}/api/auth/${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), credentials: 'include' })
+  const headers = new Headers({ 'Content-Type': 'application/json' })
+  const csrf = document.cookie.split('; ').find((item) => item.startsWith('aquasense_csrf='))?.split('=')[1]
+  if (csrf) headers.set('X-CSRF-Token', decodeURIComponent(csrf))
+  const response = await fetch(`${backendUrl}/api/auth/${endpoint}`, { method: 'POST', headers, body: JSON.stringify(payload), credentials: 'include' })
   const data = await response.json().catch(() => ({})) as { token?: string; user?: { id: string; name: string; email: string; role: Role; mobile_number?: string; email_verified?: boolean; mobile_verified?: boolean; reminder_consent?: boolean; preferred_reminder_channel?: 'email' | 'sms' | 'both'; timezone?: string }; detail?: string }
   if (!response.ok) throw new Error(data.detail || `Backend ${endpoint} failed`)
   const user = data.user
