@@ -144,10 +144,10 @@ type ParameterConfig = {
 
 // Replace this profile with model.feature_names_in_ and the serialized model metadata.
 const parameterConfig: ParameterConfig[] = [
-  { key: 'pH', name: 'pH', short: 'pH', unit: 'pH', precision: 2, min: 0, max: 14, standard: { good: 8.5, warn: 9.5, direction: 'range', lower: 6.5, upper: 8.5 }, color: '#a78bfa', icon: Droplets },
-  { key: 'TDS_mg_L', name: 'TDS', short: 'TDS', unit: 'ppm', precision: 0, min: 0, max: 10000, standard: { good: 500, warn: 2000, direction: 'high' }, color: '#62d9d3', icon: Activity },
-  { key: 'turbidity_ntu', name: 'Turbidity', short: 'Turbidity', unit: 'NTU', precision: 1, min: 0, max: 4000, standard: { good: 5, warn: 25, direction: 'high' }, color: '#f4b85d', icon: Waves },
-  { key: 'temperature_c', name: 'Temperature', short: 'Temp', unit: '°C', precision: 1, min: -10, max: 80, standard: { good: 30, warn: 40, direction: 'high' }, color: '#4da3ff', icon: Zap },
+  { key: 'pH', name: 'pH', short: 'pH', unit: 'pH', precision: 2, min: 0, max: 14, standard: { good: 8.5, warn: 9.5, direction: 'range', lower: 6.5, upper: 8.5 }, color: '#222222', icon: Droplets },
+  { key: 'TDS_mg_L', name: 'TDS', short: 'TDS', unit: 'ppm', precision: 0, min: 0, max: 10000, standard: { good: 500, warn: 2000, direction: 'high' }, color: '#555555', icon: Activity },
+  { key: 'turbidity_ntu', name: 'Turbidity', short: 'Turbidity', unit: 'NTU', precision: 1, min: 0, max: 4000, standard: { good: 5, warn: 25, direction: 'high' }, color: '#888888', icon: Waves },
+  { key: 'temperature_c', name: 'Temperature', short: 'Temp', unit: '°C', precision: 1, min: -10, max: 80, standard: { good: 30, warn: 40, direction: 'high' }, color: '#aaaaaa', icon: Zap },
 ]
 
 // Demo labels are intentionally explicit until the real model artifact is supplied.
@@ -317,8 +317,10 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
   const [isLive, setIsLive] = useState(false)
   const [lastUpdated, setLastUpdated] = useState('12 sec ago')
   const [mobileNav, setMobileNav] = useState(false)
-  const [theme, setTheme] = useState<Theme>(() => readStorage<Theme>('theme', 'light'))
-  const [themePromptOpen, setThemePromptOpen] = useState(() => !window.localStorage.getItem(storageKey('theme')))
+  // Dark is the product default: navy surfaces with white text. Users can still
+  // switch to Bright from the account menu or Settings.
+  const [theme, setTheme] = useState<Theme>(() => readStorage<Theme>('theme-v3', 'dark'))
+  const [themePromptOpen, setThemePromptOpen] = useState(() => !window.localStorage.getItem(storageKey('theme-v3')))
   const [accountOpen, setAccountOpen] = useState(false)
   const [location, setLocation] = useState<LiveLocation | null>(() => currentAccount.lastLocation)
   const [trackingLocation, setTrackingLocation] = useState(false)
@@ -330,7 +332,7 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
-    writeStorage('theme', theme)
+    writeStorage('theme-v3', theme)
   }, [theme])
 
   useEffect(() => {
@@ -726,13 +728,13 @@ function LiveMap({ location, geoStatus, onRequest, onSelectLocation, accounts }:
     if (!markers) return
     markers.clearLayers()
     if (location) {
-      L.circleMarker([location.latitude, location.longitude], { radius: 9, color: '#0b555b', weight: 3, fillColor: '#62d9d3', fillOpacity: 1 }).bindPopup('<b>Current test site</b><br/>Live browser location').addTo(markers)
+      L.circleMarker([location.latitude, location.longitude], { radius: 9, color: '#111111', weight: 3, fillColor: '#ffffff', fillOpacity: 1 }).bindPopup('<b>Current test site</b><br/>Live browser location').addTo(markers)
     }
     accounts.filter((account) => account.lastLocation).forEach((account) => {
       const accountLocation = account.lastLocation as LiveLocation
-      L.circleMarker([accountLocation.latitude, accountLocation.longitude], { radius: account.role === 'admin' ? 7 : 6, color: account.role === 'admin' ? '#a78bfa' : '#4da3ff', weight: 2, fillColor: account.role === 'admin' ? '#a78bfa' : '#4da3ff', fillOpacity: .9 }).bindPopup(`<b>${account.name}</b><br/>${account.role === 'admin' ? 'Admin' : 'User'} · active account`).addTo(markers)
+      L.circleMarker([accountLocation.latitude, accountLocation.longitude], { radius: account.role === 'admin' ? 7 : 6, color: '#222222', weight: 2, fillColor: account.role === 'admin' ? '#ffffff' : '#888888', fillOpacity: .9 }).bindPopup(`<b>${account.name}</b><br/>${account.role === 'admin' ? 'Admin' : 'User'} · active account`).addTo(markers)
     })
-    if (areaBounds) L.rectangle(areaBounds, { color: '#62d9d3', weight: 2, fillColor: '#62d9d3', fillOpacity: .12 }).addTo(markers)
+    if (areaBounds) L.rectangle(areaBounds, { color: '#444444', weight: 2, fillColor: '#999999', fillOpacity: .12 }).addTo(markers)
   }, [location, accounts, areaBounds])
 
   const nearbyUsers = accounts.filter((account) => account.lastLocation).length

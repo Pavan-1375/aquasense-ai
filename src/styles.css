@@ -198,3 +198,50 @@ h2{font:650 17px/1.3 var(--display);letter-spacing:-.01em}.page-header p{color:v
 /* privacy consent and legal content */
 .consent-banner{position:fixed;left:24px;right:24px;bottom:20px;z-index:1000;display:flex;align-items:center;gap:14px;padding:16px 18px;background:var(--surface-1);border:1px solid var(--border);box-shadow:0 12px 35px #0002;border-radius:12px}.consent-banner span{flex:1;color:var(--muted);font-size:13px}.policy-copy{max-width:900px}.policy-copy h3{margin-top:26px;color:var(--text)}
 @media(max-width:700px){.consent-banner{left:12px;right:12px;bottom:12px;flex-wrap:wrap}.consent-banner span{flex-basis:100%}}
+
+/* Final monochrome treatment: both themes use only black, white and gray. */
+:root{
+  --bg:#f4f4f4;--surface:#ffffff;--surface-2:#f0f0f0;--surface-3:#e5e5e5;
+  --text:#111111;--muted:#666666;--muted-2:#929292;--border:#d4d4d4;--border-soft:#e8e8e8;
+  --cyan:#111111;--aqua:#e7e7e7;--green:#555555;--amber:#777777;--red:#222222;--blue:#666666;
+  --rail:#0b0b0b;--rail-2:#191919;--rail-text:#c2c2c2;--on-accent:#ffffff;
+}
+:root[data-theme='dark']{
+  --bg:#0a0a0a;--surface:#111111;--surface-2:#181818;--surface-3:#222222;
+  --text:#f1f1f1;--muted:#a1a1a1;--muted-2:#777777;--border:#303030;--border-soft:#222222;
+  --cyan:#e7e7e7;--aqua:#e7e7e7;--green:#bdbdbd;--amber:#a5a5a5;--red:#dddddd;--blue:#a1a1a1;
+  --rail:#000000;--rail-2:#151515;--rail-text:#b8b8b8;--on-accent:#0b0b0b;
+}
+.brand-mark,.sidebar .avatar{background:var(--aqua);color:var(--on-accent)}
+.nav-item.active{background:var(--text);color:var(--bg);box-shadow:none}
+.button.primary,.auth-submit,.map-control-button{background:var(--cyan);border-color:var(--cyan);color:var(--on-accent)}
+.button.primary:hover,.auth-submit:hover{filter:invert(.08)}
+.status-dot,.site-dot,.notification-button span,.nav-count{background:#777!important}
+.severity,.state,.status-pill,.quality-badge,.submission-status{color:var(--text)}
+.severity.red,.severity.amber,.severity.green,.state.active,.state.acknowledged,.state.resolved,.status-pill.exceeds,.status-pill.marginal,.status-pill.within,.quality-badge.good,.submission-status.approved,.submission-status.rejected,.submission-status.draft,.submission-status.correction-requested,.submission-status.unverified,.submission-status.submitted,.submission-status.under-review{background:var(--surface-3);color:var(--text)}
+.map-layer-buttons button.selected,.map-select-buttons button.selected{background:#111;color:#fff}
+.map-search-form button{background:var(--cyan);color:var(--on-accent)}
+.map-live-badge,.map-user-count{background:#fff;color:#111}
+.theme-preview.light-preview{background:linear-gradient(135deg,#fff 55%,#111 55%)}
+.theme-preview.dark-preview{background:linear-gradient(135deg,#0a0a0a 55%,#e7e7e7 55%)}
+
+/* AquaSense premium black-and-white workspace theme. */
+:root[data-theme='dark']{
+  color-scheme:dark;
+  --bg:#0a0a0a;--surface:#111;--surface-2:#171717;--surface-3:#1f1f1f;
+  --text:#ededed;--muted:#9a9a9a;--muted-2:#737373;
+  --border:#2a2a2a;--border-soft:#1e1e1e;
+  --cyan:#e9e4d8;--aqua:#e9e4d8;--on-accent:#0a0a0a;
+  --green:#7fbf9a;--amber:#d9a441;--red:#e07a6a;--blue:#9a9a9a;
+  --rail:#000;--rail-2:#141414;--rail-text:#a8a8a8;
+}
+:root[data-theme='dark'] .nav-item.active{background:#1c1c1c;color:#fff;box-shadow:inset 2px 0 0 var(--cyan)}
+:root[data-theme='dark'] .brand-mark{background:var(--cyan);color:#0a0a0a}
+:root[data-theme='dark'] .sidebar .avatar{background:#1f1f1f;color:var(--cyan)}
+:root[data-theme='dark'] .overview-signals .metric-card:first-child{background:#141414;border-color:var(--border)}
+:root[data-theme='dark'] .map-layer-buttons button.selected,:root[data-theme='dark'] .map-select-buttons button.selected,:root[data-theme='dark'] .map-control-button{background:#0a0a0a;color:#fff}
+:root[data-theme='dark'] .auth-hero{background:#000}
+:root[data-theme='dark'] .auth-hero:after{border-color:#ffffff1a;box-shadow:0 0 0 60px #ffffff08,0 0 0 130px #ffffff05}
+:root[data-theme='dark'] .site-context .eyebrow,:root[data-theme='dark'] .site-coordinate,:root[data-theme='dark'] .model-chip .eyebrow,:root[data-theme='dark'] .api-status-text,:root[data-theme='dark'] .user-row span,:root[data-theme='dark'] .brand-subtitle,:root[data-theme='dark'] .site-select svg,:root[data-theme='dark'] .nav-section-label{color:var(--muted-2)}
+:root[data-theme='dark'] .submission-status.submitted,:root[data-theme='dark'] .submission-status.under-review{background:#ffffff14;color:var(--muted)}
+::selection{background:#3a3a3a;color:#fff}
