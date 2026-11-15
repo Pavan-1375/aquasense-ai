@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import secrets
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Cookie, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from .config import get_settings
@@ -36,10 +36,10 @@ def issue_token(db: Session, user: User) -> str:
     return token
 
 
-def get_current_user(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> User:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bearer token required")
-    token = authorization.split(" ", 1)[1].strip()
+def get_current_user(authorization: str | None = Header(default=None), session_cookie: str | None = Cookie(default=None, alias="aquasense_session"), db: Session = Depends(get_db)) -> User:
+    token = authorization.split(" ", 1)[1].strip() if authorization and authorization.lower().startswith("bearer ") else session_cookie
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     session = db.get(SessionToken, token)
     if not session or session.expires_at < datetime.now(timezone.utc).replace(tzinfo=None):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or invalid")

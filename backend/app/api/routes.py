@@ -9,6 +9,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
+from fastapi import Response
 from sqlalchemy import desc, text
 from sqlalchemy.orm import Session
 
@@ -73,6 +74,7 @@ from ..security import get_current_user, hash_password, issue_token, require_adm
 from ..services.forecast import fallback_forecast
 from ..services.ingestion import save_measurement, save_measurement_with_key
 from ..services.quality import calculate_wqi
+from ml.quality_inference import predict_quality
 from ..services.reminders import ensure_schedule, next_occurrence, run_reminder_cycle
 
 
@@ -82,18 +84,20 @@ settings = get_settings()
 
 class SocketManager:
     def __init__(self) -> None:
-        self.connections: list[WebSocket] = []
+        self.connections: list[tuple[WebSocket, str]] = []
 
-    async def connect(self, websocket: WebSocket) -> None:
+    async def connect(self, websocket: WebSocket, user_id: str) -> None:
         await websocket.accept()
-        self.connections.append(websocket)
+        self.connections.append((websocket, user_id))
 
     def disconnect(self, websocket: WebSocket) -> None:
-        if websocket in self.connections:
-            self.connections.remove(websocket)
+        self.connections = [(connection, user_id) for connection, user_id in self.connections if connection is not websocket]
 
     async def broadcast(self, payload: dict) -> None:
-        for websocket in list(self.connections):
+        owner_id = payload.get("measurement", {}).get("owner_id")
+        for websocket, user_id in list(self.connections):
+            if owner_id and user_id != owner_id:
+                continue
             try:
                 await websocket.send_json(payload)
             except Exception:
@@ -186,6 +190,20 @@ def _quality_warnings(payload: SubmissionCreate) -> list[dict[str, str]]:
     return warnings
 
 
+def _run_quality_model(quality: dict) -> dict:
+    artifact = Path("ml/artifacts/quality_model.joblib")
+    if not artifact.exists():
+        return {"status": "fallback", "reason": "compatible model artifact unavailable"}
+    required = {"pH": quality.get("ph"), "TDS_mg_L": quality.get("tds_mg_l"), "Turbidity_NTU": quality.get("turbidity_ntu"), "Temperature_C": quality.get("temperature_c")}
+    if any(value is None for value in required.values()):
+        return {"status": "fallback", "reason": "one or more four-parameter inputs are missing"}
+    try:
+        result = predict_quality(required, artifact)
+        return {"status": "model", **result}
+    except (ValueError, OSError, RuntimeError) as error:
+        return {"status": "fallback", "reason": str(error)}
+
+
 @router.get("/health")
 def health(request: Request, db: Session = Depends(get_db)) -> dict:
     database_status = "ok"
@@ -209,7 +227,7 @@ def health(request: Request, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/auth/signup", response_model=AuthResponse, status_code=201)
-def signup(payload: UserCreate, db: Session = Depends(get_db)) -> AuthResponse:
+def signup(payload: UserCreate, response: Response, db: Session = Depends(get_db)) -> AuthResponse:
     if db.query(User).filter(User.email == payload.email).first():
         raise HTTPException(status_code=409, detail="An account with this email already exists")
     if db.query(UserContact).filter(UserContact.mobile_e164 == payload.mobile_number).first():
@@ -233,16 +251,22 @@ def signup(payload: UserCreate, db: Session = Depends(get_db)) -> AuthResponse:
     db.commit()
     db.refresh(user)
     token = issue_token(db, user)
-    return AuthResponse(token=token, user=as_user(user, contact))
+    csrf = secrets.token_urlsafe(32)
+    response.set_cookie("aquasense_session", token, httponly=True, secure=settings.app_env.lower() == "production", samesite="lax", max_age=604800, path="/")
+    response.set_cookie("aquasense_csrf", csrf, httponly=False, secure=settings.app_env.lower() == "production", samesite="lax", max_age=604800, path="/")
+    return AuthResponse(user=as_user(user, contact))
 
 
 @router.post("/auth/signin", response_model=AuthResponse)
-def signin(payload: SignIn, db: Session = Depends(get_db)) -> AuthResponse:
+def signin(payload: SignIn, response: Response, db: Session = Depends(get_db)) -> AuthResponse:
     user = db.query(User).filter(User.email == payload.email).first()
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Email or password is incorrect")
     token = issue_token(db, user)
-    return AuthResponse(token=token, user=as_user(user, db.query(UserContact).filter(UserContact.user_id == user.id).first()))
+    csrf = secrets.token_urlsafe(32)
+    response.set_cookie("aquasense_session", token, httponly=True, secure=settings.app_env.lower() == "production", samesite="lax", max_age=604800, path="/")
+    response.set_cookie("aquasense_csrf", csrf, httponly=False, secure=settings.app_env.lower() == "production", samesite="lax", max_age=604800, path="/")
+    return AuthResponse(user=as_user(user, db.query(UserContact).filter(UserContact.user_id == user.id).first()))
 
 
 @router.post("/auth/forgot-password")
@@ -271,6 +295,7 @@ def reset_password(payload: ResetPassword, db: Session = Depends(get_db)) -> dic
         raise HTTPException(status_code=400, detail="Reset token is invalid")
     user.password_hash = hash_password(payload.new_password)
     reset.used = True
+    db.query(SessionToken).filter(SessionToken.user_id == user.id).delete(synchronize_session=False)
     db.commit()
     return {"status": "password_reset", "message": "Password updated. Sign in with the new password."}
 
@@ -281,7 +306,7 @@ def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)) ->
 
 
 @router.post("/auth/logout")
-def logout(authorization: Annotated[str | None, Header()] = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+def logout(response: Response, authorization: Annotated[str | None, Header()] = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     token = authorization.split(" ", 1)[1].strip() if authorization and " " in authorization else ""
     if token:
         from ..models import SessionToken
@@ -290,6 +315,8 @@ def logout(authorization: Annotated[str | None, Header()] = None, user: User = D
         if session:
             db.delete(session)
             db.commit()
+    response.delete_cookie("aquasense_session", path="/")
+    response.delete_cookie("aquasense_csrf", path="/")
     return {"status": "signed_out", "user_id": user.id}
 
 
@@ -433,6 +460,7 @@ def _persist_quality_and_groundwater(db: Session, submission: SubmissionBatch) -
             existing.raw_json = json.dumps({"submission_id": submission.id, "groundwater": groundwater})
         else:
             db.add(Measurement(
+                owner_id=submission.user_id,
                 device_id=submission.device_id,
                 station_id=submission.station_id,
                 timestamp=submission.measurement_at,
@@ -446,7 +474,11 @@ def _persist_quality_and_groundwater(db: Session, submission: SubmissionBatch) -
             ))
     if quality:
         wqi, classification, missing = calculate_wqi({"measured_at": submission.measurement_at, "station_id": submission.station_id, **quality})
+        model_result = _run_quality_model(quality)
+        if model_result.get("status") == "model":
+            classification = model_result.get("class") or classification
         db.add(QualityObservation(
+            owner_id=submission.user_id,
             station_id=submission.station_id,
             measured_at=submission.measurement_at,
             ph=quality.get("ph"),
@@ -462,7 +494,7 @@ def _persist_quality_and_groundwater(db: Session, submission: SubmissionBatch) -
             source="user-submission",
             data_quality="partial" if missing else "valid",
         ))
-    db.add(ModelExecutionRecord(submission_id=submission.id, model_name="quality-screening", model_version="screening-wqi-0.2", status="completed", input_json=submission.quality_json, output_json=json.dumps({"classification": classification if quality else None})))
+    db.add(ModelExecutionRecord(submission_id=submission.id, model_name="quality-screening", model_version="random-forest-four-parameter-0.1" if quality and model_result.get("status") == "model" else "screening-wqi-fallback-0.2", status="completed", input_json=submission.quality_json, output_json=json.dumps({"classification": classification if quality else None, "model": model_result if quality else None})))
 
 
 @router.post("/submissions", response_model=SubmissionOut, status_code=201)
@@ -493,7 +525,7 @@ def create_submission(payload: SubmissionCreate, db: Session = Depends(get_db), 
         db.add(DataQualityResult(submission_id=submission.id, severity=warning["severity"], code=warning["code"], field=warning.get("field"), detail=warning["detail"]))
     if status != "Draft":
         db.add(SubmissionReview(submission_id=submission.id, reviewer_id=user.id, from_status=None, to_status="Submitted", reason="User submission received"))
-        db.add(Alert(station_id=payload.station_id, severity="info", title="New monitoring submission", detail=f"Submission {submission.id} is awaiting administrator review."))
+        db.add(Alert(owner_id=user.id, station_id=payload.station_id, severity="info", title="New monitoring submission", detail=f"Submission {submission.id} is awaiting administrator review."))
         contact = db.query(UserContact).filter(UserContact.user_id == user.id).first()
         if contact:
             contact.last_submission_at = utc_now()
@@ -538,7 +570,7 @@ def submit_correction(submission_id: str, payload: SubmissionCreate, db: Session
     db.add(submission)
     db.flush()
     db.add(SubmissionReview(submission_id=submission.id, reviewer_id=user.id, from_status=original.status, to_status="Submitted", reason="Correction submitted"))
-    db.add(Alert(station_id=original.station_id, severity="info", title="Corrected submission received", detail=f"Submission {submission.id} supersedes {original.id}."))
+    db.add(Alert(owner_id=original.user_id, station_id=original.station_id, severity="info", title="Corrected submission received", detail=f"Submission {submission.id} supersedes {original.id}."))
     db.add(AuditEvent(user_id=user.id, event_type="submission.corrected", detail=json.dumps({"submission_id": submission.id, "parent_submission_id": original.id})))
     db.commit()
     db.refresh(submission)
@@ -557,8 +589,25 @@ async def upload_submission_attachment(submission_id: str, file: UploadFile = Fi
     if len(content) > settings.max_upload_mb * 1024 * 1024:
         raise HTTPException(status_code=413, detail=f"Attachment exceeds {settings.max_upload_mb} MB")
     safe_suffix = Path(file.filename or "attachment").suffix.lower()
-    if safe_suffix not in {".csv", ".pdf", ".txt", ".xls", ".xlsx"}:
+    if safe_suffix not in {".csv", ".pdf", ".txt", ".xls", ".xlsx", ".jpg", ".jpeg", ".png", ".webp"}:
         raise HTTPException(status_code=422, detail="Unsupported attachment extension")
+    if safe_suffix in {".jpg", ".jpeg", ".png", ".webp"}:
+        try:
+            from PIL import Image
+            image = Image.open(io.BytesIO(content))
+            image.load()
+            cleaned = Image.new(image.mode, image.size)
+            cleaned.putdata(list(image.getdata()))
+            buffer = io.BytesIO()
+            cleaned.save(buffer, format="PNG" if safe_suffix == ".png" else "JPEG", optimize=True)
+            content = buffer.getvalue()
+            safe_suffix = ".png" if safe_suffix == ".png" else ".jpg"
+        except Exception as error:
+            raise HTTPException(status_code=422, detail="Image could not be decoded and sanitized") from error
+    signatures = {".pdf": b"%PDF", ".png": b"\x89PNG\r\n\x1a\n", ".jpg": b"\xff\xd8\xff", ".jpeg": b"\xff\xd8\xff", ".webp": b"RIFF"}
+    signature = signatures.get(safe_suffix)
+    if signature and not content.startswith(signature):
+        raise HTTPException(status_code=422, detail="File content does not match its extension")
     upload_dir = Path(settings.upload_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
     target = upload_dir / f"{submission.id}-{secrets.token_hex(8)}{safe_suffix}"
@@ -628,12 +677,15 @@ def admin_notifications(limit: int = Query(default=100, ge=1, le=500), db: Sessi
 
 @router.get("/stations", response_model=list[StationOut])
 def list_stations(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[Station]:
-    return db.query(Station).order_by(Station.name.asc()).all()
+    query = db.query(Station)
+    if user.role != "admin":
+        query = query.filter(Station.owner_id == user.id)
+    return query.order_by(Station.name.asc()).all()
 
 
 @router.post("/stations", response_model=StationOut, status_code=201)
 def create_station(payload: StationCreate, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> Station:
-    station = Station(**payload.model_dump())
+    station = Station(owner_id=user.id, **payload.model_dump())
     db.add(station)
     db.add(AuditEvent(user_id=user.id, event_type="station.created", detail=station.name))
     db.commit()
@@ -650,7 +702,9 @@ def list_devices(db: Session = Depends(get_db), user: User = Depends(get_current
 def create_device(payload: DeviceCreate, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> Device:
     if db.query(Device).filter(Device.device_id == payload.device_id).first():
         raise HTTPException(status_code=409, detail="Device identifier already registered")
-    device = Device(device_id=payload.device_id, name=payload.name, device_type=payload.device_type, station_id=payload.station_id, ingest_key=payload.ingest_key or settings.device_ingest_key)
+    if not payload.ingest_key:
+        raise HTTPException(status_code=422, detail="A unique device ingestion key is required")
+    device = Device(device_id=payload.device_id, name=payload.name, device_type=payload.device_type, station_id=payload.station_id, ingest_key=payload.ingest_key)
     db.add(device)
     db.add(AuditEvent(user_id=user.id, event_type="device.created", detail=device.device_id))
     db.commit()
@@ -661,7 +715,7 @@ def create_device(payload: DeviceCreate, db: Session = Depends(get_db), user: Us
 @router.post("/ingest/http", response_model=MeasurementOut, status_code=201)
 async def ingest_http(payload: MeasurementIn, x_device_key: Annotated[str | None, Header()] = None, x_idempotency_key: Annotated[str | None, Header()] = None, db: Session = Depends(get_db)) -> Measurement:
     device = db.query(Device).filter(Device.device_id == payload.device_id).first()
-    allowed = x_device_key and (x_device_key == settings.device_ingest_key or (device and x_device_key == device.ingest_key))
+    allowed = bool(x_device_key and device and secrets.compare_digest(x_device_key, device.ingest_key))
     if not allowed:
         raise HTTPException(status_code=401, detail="Valid device ingestion key required")
     measurement = save_measurement_with_key(db, payload, source="http", idempotency_key=x_idempotency_key)
@@ -672,9 +726,9 @@ async def ingest_http(payload: MeasurementIn, x_device_key: Annotated[str | None
 @router.post("/location/sync")
 def sync_live_location(payload: LocationSyncIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     """Update the active station so subsequent device packets carry this site snapshot."""
-    station = db.query(Station).order_by(Station.created_at.asc()).first()
+    station = db.query(Station).filter(Station.owner_id == user.id).order_by(Station.created_at.asc()).first()
     if not station:
-        station = Station(name="Live browser site")
+        station = Station(name="Live browser site", owner_id=user.id)
         db.add(station)
     station.latitude = payload.latitude
     station.longitude = payload.longitude
@@ -691,6 +745,8 @@ def sync_live_location(payload: LocationSyncIn, db: Session = Depends(get_db), u
 @router.get("/measurements", response_model=list[MeasurementOut])
 def list_measurements(station_id: str | None = None, status: str | None = None, limit: int = Query(default=200, ge=1, le=2000), db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[Measurement]:
     query = db.query(Measurement)
+    if user.role != "admin":
+        query = query.filter(Measurement.owner_id == user.id)
     if station_id:
         query = query.filter(Measurement.station_id == station_id)
     if status:
@@ -734,7 +790,7 @@ def review_measurement(measurement_id: str, payload: SubmissionReviewIn, db: Ses
     for alert in pending_alerts:
         alert.state = "resolved"
         alert.resolved_at = utc_now()
-    db.add(Alert(station_id=measurement.station_id, severity="info", title=f"Device reading {payload.status.lower()} · {measurement.device_id}", detail=f"Measurement {measurement.id} was {payload.status.lower()} by the administrator."))
+    db.add(Alert(owner_id=measurement.owner_id, station_id=measurement.station_id, severity="info", title=f"Device reading {payload.status.lower()} · {measurement.device_id}", detail=f"Measurement {measurement.id} was {payload.status.lower()} by the administrator."))
     db.add(AuditEvent(user_id=admin.id, event_type="measurement.reviewed", detail=json.dumps({"measurement_id": measurement.id, "status": payload.status, "reason": payload.reason})))
     db.commit()
     db.refresh(measurement)
@@ -742,7 +798,7 @@ def review_measurement(measurement_id: str, payload: SubmissionReviewIn, db: Ses
 
 
 @router.post("/admin/measurements/live-preview/{measurement_id}/review", response_model=MeasurementOut)
-def review_measurement_preview(measurement_id: str, payload: SubmissionReviewIn, db: Session = Depends(get_db)) -> Measurement:
+def review_measurement_preview(measurement_id: str, payload: SubmissionReviewIn, db: Session = Depends(get_db), admin: User = Depends(require_admin)) -> Measurement:
     if settings.app_env != "development":
         raise HTTPException(status_code=404, detail="Admin preview is disabled outside development")
     measurement = db.get(Measurement, measurement_id)
@@ -765,7 +821,10 @@ def review_measurement_preview(measurement_id: str, payload: SubmissionReviewIn,
 def create_quality(payload: QualityObservationIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> QualityObservation:
     values = payload.model_dump()
     wqi, classification, missing = calculate_wqi(values)
-    observation = QualityObservation(**values, wqi=wqi, classification=classification, data_quality="partial" if missing else "valid")
+    model_result = _run_quality_model(values)
+    if model_result.get("status") == "model":
+        classification = model_result.get("class") or classification
+    observation = QualityObservation(owner_id=user.id, **values, wqi=wqi, classification=classification, data_quality="pending_review" if user.role != "admin" else ("partial" if missing else "valid"))
     db.add(observation)
     db.add(AuditEvent(user_id=user.id, event_type="quality.created", detail=json.dumps({"station_id": payload.station_id, "missing": missing})))
     db.commit()
@@ -776,6 +835,8 @@ def create_quality(payload: QualityObservationIn, db: Session = Depends(get_db),
 @router.get("/quality", response_model=list[QualityObservationOut])
 def list_quality(station_id: str | None = None, limit: int = Query(default=200, ge=1, le=2000), db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[QualityObservation]:
     query = db.query(QualityObservation)
+    if user.role != "admin":
+        query = query.filter(QualityObservation.owner_id == user.id)
     if station_id:
         query = query.filter(QualityObservation.station_id == station_id)
     return query.order_by(desc(QualityObservation.measured_at)).limit(limit).all()
@@ -806,7 +867,10 @@ def dashboard(station_id: str | None = None, db: Session = Depends(get_db), user
     # Only reviewed readings are official analytics. Demo and raw live device
     # readings stay out of the official dashboard until an administrator approves them.
     measurement_query = db.query(Measurement).filter(Measurement.quality_status == "reviewed")
-    quality_query = db.query(QualityObservation)
+    quality_query = db.query(QualityObservation).filter(QualityObservation.data_quality != "pending_review")
+    if user.role != "admin":
+        measurement_query = measurement_query.filter(Measurement.owner_id == user.id)
+        quality_query = quality_query.filter(QualityObservation.owner_id == user.id)
     if station_id:
         measurement_query = measurement_query.filter(Measurement.station_id == station_id)
         quality_query = quality_query.filter(QualityObservation.station_id == station_id)
@@ -815,7 +879,10 @@ def dashboard(station_id: str | None = None, db: Session = Depends(get_db), user
     latest_quality = quality_query.order_by(desc(QualityObservation.measured_at)).first()
     levels = [item.water_level_percent for item in reversed(measurements) if item.water_level_percent is not None]
     forecast = fallback_forecast(levels) if levels else None
-    alerts = db.query(Alert).filter(Alert.state != "resolved").order_by(desc(Alert.created_at)).limit(5).all()
+    alert_query = db.query(Alert).filter(Alert.state != "resolved")
+    if user.role != "admin":
+        alert_query = alert_query.filter(Alert.owner_id == user.id)
+    alerts = alert_query.order_by(desc(Alert.created_at)).limit(5).all()
     online = db.query(Device).filter(Device.status == "online").count()
     approved_count = db.query(Measurement).filter(Measurement.quality_status == "reviewed").count()
     return DashboardResponse(status="online" if online else "offline", measurement_count=approved_count, station_count=db.query(Station).count(), device_count=db.query(Device).count(), online_devices=online, latest_measurement=MeasurementOut.model_validate(latest) if latest else None, latest_quality=QualityObservationOut.model_validate(latest_quality) if latest_quality else None, active_alerts=[AlertOut.model_validate(alert) for alert in alerts], forecast=forecast, limitations=["Only administrator-approved readings enter official dashboard analytics.", "Forecast is a transparent trend fallback until a compatible trained groundwater artifact is configured.", "Water quality screening does not certify potability or detect all contaminants."])
@@ -824,6 +891,8 @@ def dashboard(station_id: str | None = None, db: Session = Depends(get_db), user
 @router.get("/alerts", response_model=list[AlertOut])
 def list_alerts(state: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[Alert]:
     query = db.query(Alert)
+    if user.role != "admin":
+        query = query.filter(Alert.owner_id == user.id)
     if state:
         query = query.filter(Alert.state == state)
     return query.order_by(desc(Alert.created_at)).limit(500).all()
@@ -838,7 +907,7 @@ def live_alerts_preview(db: Session = Depends(get_db)) -> list[Alert]:
 
 @router.patch("/alerts/{alert_id}", response_model=AlertOut)
 def update_alert(alert_id: str, payload: AlertStateUpdate, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> Alert:
-    alert = db.get(Alert, alert_id)
+    alert = db.query(Alert).filter(Alert.id == alert_id, *( [] if user.role == "admin" else [Alert.owner_id == user.id] )).first()
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
     alert.state = payload.state
@@ -912,7 +981,21 @@ def summary_pdf(db: Session = Depends(get_db), user: User = Depends(get_current_
 
 @router.websocket("/ws/measurements")
 async def measurements_socket(websocket: WebSocket) -> None:
-    await socket_manager.connect(websocket)
+    token = websocket.query_params.get("token") or websocket.cookies.get("aquasense_session")
+    from ..db import SessionLocal
+    db = SessionLocal()
+    try:
+        session = db.get(SessionToken, token) if token else None
+        if not session or session.expires_at < utc_now():
+            await websocket.close(code=4401)
+            return
+        user = db.get(User, session.user_id)
+        if not user or not user.is_active:
+            await websocket.close(code=4401)
+            return
+        await socket_manager.connect(websocket, user.id)
+    finally:
+        db.close()
     try:
         while True:
             await websocket.receive_text()

@@ -7,7 +7,7 @@ The quality pipeline uses the two CGWB chemistry CSVs as sources. The original T
 - Temperature and turbidity are not measured in these files.
 - TDS is present in only about 14–18% of rows.
 
-`train_quality_model.py` creates a reproducible screening target using a weighted-arithmetic WQI formula over five observed inputs: pH, EC, TDS, total hardness, and chloride. It compares logistic regression, random forest, ExtraTrees, and XGBoost using stratified five-fold macro-F1. The best candidate is refit on all complete rows and saved with its feature order, classes, units, limits, source mapping, and metrics.
+`train_quality_model.py` defines the active four-input contract: pH, TDS, turbidity and temperature. The supplied CGWB chemistry files are not compatible because they do not contain turbidity and temperature. Do not train this script against those files unless a compatible dataset is supplied.
 
 Example:
 

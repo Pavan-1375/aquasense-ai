@@ -36,10 +36,10 @@ SOURCE_COLUMNS = {
 }
 
 LIMITS = {
-    "pH": {"ideal": 7.0, "lower": 6.5, "upper": 8.5, "weight_limit": 1.5},
-    "TDS_mg_L": {"ideal": 0.0, "upper": 500.0, "weight_limit": 500.0},
-    "Turbidity_NTU": {"ideal": 0.0, "upper": 5.0, "weight_limit": 5.0},
-    "Temperature_C": {"ideal": 25.0, "upper": 40.0, "weight_limit": 15.0},
+    "pH": {"ideal": 7.0, "lower": 6.5, "upper": 8.5, "scale": 2.0, "weight": 0.25},
+    "TDS_mg_L": {"ideal": 0.0, "upper": 500.0, "scale": 500.0, "weight": 0.25},
+    "Turbidity_NTU": {"ideal": 0.0, "upper": 5.0, "scale": 5.0, "weight": 0.25},
+    "Temperature_C": {"ideal": 25.0, "upper": 40.0, "scale": 15.0, "weight": 0.25},
 }
 
 CLASS_BANDS = [0.0, 25.0, 50.0, 75.0, 100.0, float("inf")]
@@ -68,11 +68,9 @@ def load_quality_data(paths: list[Path]) -> pd.DataFrame:
 def parameter_subindex(values: pd.Series, name: str) -> pd.Series:
     limits = LIMITS[name]
     if name == "pH":
-        high_side = values >= limits["ideal"]
-        high_index = 100.0 * (values - limits["ideal"]) / (limits["upper"] - limits["ideal"])
-        low_index = 100.0 * (limits["ideal"] - values) / (limits["ideal"] - limits["lower"])
-        return pd.Series(np.where(high_side, high_index, low_index), index=values.index).clip(lower=0)
-    return 100.0 * (values - limits["ideal"]) / limits["upper"]
+        distance = np.maximum(0.0, np.maximum(limits["lower"] - values, values - limits["upper"]))
+        return 100.0 * distance / limits["scale"]
+    return 100.0 * np.abs(values - limits["ideal"]) / limits["scale"]
 
 
 def calculate_wqi(frame: pd.DataFrame) -> pd.Series:
@@ -80,7 +78,7 @@ def calculate_wqi(frame: pd.DataFrame) -> pd.Series:
     weights = []
     for name in FEATURE_COLUMNS:
         subindex = parameter_subindex(frame[name], name)
-        weight = 1.0 / LIMITS[name]["weight_limit"]
+        weight = LIMITS[name]["weight"]
         weighted_subindices.append(subindex * weight)
         weights.append(weight)
     return sum(weighted_subindices) / sum(weights)
@@ -161,7 +159,7 @@ def train(paths: list[Path], output_dir: Path) -> dict[str, Any]:
         "feature_order": FEATURE_COLUMNS,
         "classes": CLASS_LABELS,
         "class_mapping": {str(index): label for label, index in class_to_id.items()},
-        "formula": "Weighted arithmetic screening score over pH, TDS, turbidity, and temperature",
+        "formula": "Four-parameter normalized screening score: 25% each pH, TDS, turbidity and temperature; lower score is better",
         "limits": LIMITS,
         "source_columns": SOURCE_COLUMNS,
     }
@@ -180,7 +178,7 @@ def train(paths: list[Path], output_dir: Path) -> dict[str, Any]:
         "metrics": metrics,
         "limitations": [
             "Labels are derived from the documented screening formula, not clinician- or regulator-confirmed classes.",
-            "The supplied CGWB chemistry files are not compatible with this four-parameter contract because they do not provide turbidity and temperature.",
+            "Training labels are generated from the configured screening formula; independent laboratory labels are not available.",
             "The result is not a potability certification and does not include microbiological testing.",
         ],
     }

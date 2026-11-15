@@ -1,11 +1,10 @@
 {
-  "model_type": "xgboost",
+  "model_type": "extra_trees",
   "feature_order": [
     "pH",
-    "EC_uS_cm",
     "TDS_mg_L",
-    "Total_Hardness_mgCaCO3_L",
-    "Chloride_mg_L"
+    "Turbidity_NTU",
+    "Temperature_C"
   ],
   "classes": [
     "Excellent",
@@ -14,88 +13,78 @@
     "Very poor",
     "Unsuitable"
   ],
-  "formula": "Weighted arithmetic WQI over pH, EC, TDS, total hardness, and chloride",
+  "formula": "Four-parameter normalized screening score: 25% each pH, TDS, turbidity and temperature; lower score is better",
   "limits": {
     "pH": {
       "ideal": 7.0,
       "lower": 6.5,
       "upper": 8.5,
-      "weight_limit": 1.5
-    },
-    "EC_uS_cm": {
-      "ideal": 0.0,
-      "upper": 1500.0,
-      "weight_limit": 1500.0
+      "scale": 2.0,
+      "weight": 0.25
     },
     "TDS_mg_L": {
       "ideal": 0.0,
       "upper": 500.0,
-      "weight_limit": 500.0
+      "scale": 500.0,
+      "weight": 0.25
     },
-    "Total_Hardness_mgCaCO3_L": {
+    "Turbidity_NTU": {
       "ideal": 0.0,
-      "upper": 200.0,
-      "weight_limit": 200.0
+      "upper": 5.0,
+      "scale": 5.0,
+      "weight": 0.25
     },
-    "Chloride_mg_L": {
-      "ideal": 0.0,
-      "upper": 250.0,
-      "weight_limit": 250.0
+    "Temperature_C": {
+      "ideal": 25.0,
+      "upper": 40.0,
+      "scale": 15.0,
+      "weight": 0.25
     }
   },
   "source_files": [
-    "C:\\Users\\Acer\\Downloads\\gwq_chemical_parameter_manual_cgwb_ka_1961_2025.csv",
-    "C:\\Users\\Acer\\Downloads\\gwq_chemical_parameter_manual_cgwb_ap_1961_2025.csv"
+    "data\\external\\water_quality_four_parameter.csv"
   ],
-  "complete_rows": 3218,
+  "complete_rows": 300,
   "label_distribution": {
-    "Poor": 1214,
-    "Good": 943,
-    "Very poor": 559,
-    "Excellent": 314,
-    "Unsuitable": 188
+    "Good": 116,
+    "Unsuitable": 84,
+    "Excellent": 77,
+    "Poor": 14,
+    "Very poor": 9
   },
   "wqi_range": [
-    0.2426,
-    629.3615
+    9.0134,
+    426.676
   ],
   "feature_importance": {
-    "pH": 0.80513,
-    "EC_uS_cm": 0.051394,
-    "TDS_mg_L": 0.034208,
-    "Total_Hardness_mgCaCO3_L": 0.056178,
-    "Chloride_mg_L": 0.05309
+    "pH": 0.074099,
+    "TDS_mg_L": 0.159551,
+    "Turbidity_NTU": 0.573563,
+    "Temperature_C": 0.192787
   },
   "metrics": {
     "logistic_regression": {
-      "accuracy": 0.6355,
-      "macro_f1": 0.6022,
-      "weighted_f1": 0.6571,
-      "balanced_accuracy": 0.6617
+      "accuracy": 0.79,
+      "macro_f1": 0.6545,
+      "weighted_f1": 0.807,
+      "balanced_accuracy": 0.7069
     },
     "random_forest": {
-      "accuracy": 0.972,
-      "macro_f1": 0.9715,
-      "weighted_f1": 0.9721,
-      "balanced_accuracy": 0.9755
+      "accuracy": 0.89,
+      "macro_f1": 0.7918,
+      "weighted_f1": 0.8884,
+      "balanced_accuracy": 0.7885
     },
     "extra_trees": {
-      "accuracy": 0.9599,
-      "macro_f1": 0.9542,
-      "weighted_f1": 0.9601,
-      "balanced_accuracy": 0.965
-    },
-    "xgboost": {
-      "accuracy": 0.9773,
-      "macro_f1": 0.9758,
-      "weighted_f1": 0.9773,
-      "balanced_accuracy": 0.9786
+      "accuracy": 0.9,
+      "macro_f1": 0.8274,
+      "weighted_f1": 0.9013,
+      "balanced_accuracy": 0.8384
     }
   },
   "limitations": [
     "Labels are derived from the documented screening formula, not clinician- or regulator-confirmed classes.",
-    "The source data has no temperature or turbidity measurements.",
-    "The source files have sparse TDS and hardness values; complete-row training reduces coverage.",
+    "Training labels are generated from the configured screening formula; independent laboratory labels are not available.",
     "The result is not a potability certification and does not include microbiological testing."
   ]
 }

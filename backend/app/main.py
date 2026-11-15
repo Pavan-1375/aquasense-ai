@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import logging
 from time import perf_counter
 from uuid import uuid4
@@ -35,6 +36,11 @@ async def request_context(request: Request, call_next):
         if not limiter.allow(f"{client_ip}:{request.url.path}", limit, settings.rate_limit_window_seconds):
             return JSONResponse(status_code=429, content={"detail": "Too many requests. Please retry later."}, headers={"Retry-After": str(settings.rate_limit_window_seconds)})
     started = perf_counter()
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and request.cookies.get("aquasense_session"):
+        csrf_cookie = request.cookies.get("aquasense_csrf")
+        csrf_header = request.headers.get("X-CSRF-Token")
+        if not csrf_cookie or not csrf_header or not hmac.compare_digest(csrf_cookie, csrf_header):
+            return JSONResponse(status_code=403, content={"detail": "CSRF token required"})
     try:
         response = await call_next(request)
     except Exception:

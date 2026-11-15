@@ -98,7 +98,6 @@ type Account = {
   id: string
   name: string
   email: string
-  password?: string
   mobileNumber?: string
   emailVerified?: boolean
   mobileVerified?: boolean
@@ -186,25 +185,23 @@ function writeStorage(key: string, value: unknown) {
   }
 }
 
-function persistedAccounts(accounts: Account[]) {
-  return accounts.map(({ password: _password, ...account }) => account)
-}
+function persistedAccounts(accounts: Account[]) { return accounts }
 
 async function backendAuth(endpoint: 'signup' | 'signin', payload: Record<string, string>) {
-  const response = await fetch(`${backendUrl}/api/auth/${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+  const response = await fetch(`${backendUrl}/api/auth/${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), credentials: 'include' })
   const data = await response.json().catch(() => ({})) as { token?: string; user?: { id: string; name: string; email: string; role: Role; mobile_number?: string; email_verified?: boolean; mobile_verified?: boolean; reminder_consent?: boolean; preferred_reminder_channel?: 'email' | 'sms' | 'both'; timezone?: string }; detail?: string }
   if (!response.ok) throw new Error(data.detail || `Backend ${endpoint} failed`)
   const user = data.user
-  if (!data.token || !user) throw new Error('Backend returned an incomplete authentication response')
+  if (!user) throw new Error('Backend returned an incomplete authentication response')
   return { token: data.token, user }
 }
 
 async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const token = readStorage<string | null>('api-token', null)
   const headers = new Headers(options.headers)
   headers.set('Content-Type', 'application/json')
-  if (token) headers.set('Authorization', `Bearer ${token}`)
-  const response = await fetch(`${backendUrl}${path}`, { ...options, headers })
+  const csrf = document.cookie.split('; ').find((item) => item.startsWith('aquasense_csrf='))?.split('=')[1]
+  if (csrf) headers.set('X-CSRF-Token', decodeURIComponent(csrf))
+  const response = await fetch(`${backendUrl}${path}`, { ...options, headers, credentials: 'include' })
   const data = await response.json().catch(() => ({})) as T & { detail?: string }
   if (!response.ok) throw new Error(data.detail || `Request failed (${response.status})`)
   return data
@@ -279,14 +276,14 @@ function getStatus(value: number, config: ParameterConfig): Status {
 
 function classFromValues(values: Record<string, number>) {
   const pH = values.pH
-  const pHIndex = pH >= 7 ? 100 * (pH - 7) / 1.5 : 100 * (7 - pH) / 0.5
+  const pHIndex = 100 * Math.max(0, Math.max(6.5 - pH, pH - 8.5)) / 2
   const indices = [
     Math.max(0, pHIndex),
-    100 * values.TDS_mg_L / 500,
-    100 * values.turbidity_ntu / 5,
-    100 * Math.max(0, values.temperature_c - 25) / 15,
+    100 * Math.abs(values.TDS_mg_L) / 500,
+    100 * Math.abs(values.turbidity_ntu) / 5,
+    100 * Math.abs(values.temperature_c - 25) / 15,
   ]
-  const weights = [1 / 1.5, 1 / 500, 1 / 5, 1 / 15]
+  const weights = [0.25, 0.25, 0.25, 0.25]
   const wqi = indices.reduce((total, index, position) => total + index * weights[position], 0) / weights.reduce((total, weight) => total + weight, 0)
   const label = wqi <= 25 ? 'Excellent' : wqi <= 50 ? 'Good' : wqi <= 75 ? 'Poor' : wqi <= 100 ? 'Very poor' : 'Unsuitable'
   // This client-side preview applies the documented screening formula, but it
@@ -547,7 +544,7 @@ function OverviewPage({ navigate, prediction, dashboard, values, location, geoSt
         <div className="site-table"><div className="table-row table-head"><span>Site</span><span>Status</span><span>Quality</span><span>Accuracy</span></div><SiteRow name="Current test site" type={location ? formatCoordinates(location) : 'No browser location linked'} status={location ? 'Online' : 'Needs location'} quality={location ? prediction.label : 'Unavailable'} level={location ? `±${Math.round(location.accuracy)}m` : '—'} selected={!location} warning={!location} /></div>
       </section>
       <div className="right-stack">
-        <section className="panel insight-card"><div className="panel-heading compact"><div><div className="eyebrow">Latest screening</div><h2>Quality insight</h2></div><Sparkles size={17} className="cyan-icon" /></div><div className="insight-verdict"><span className="quality-badge good"><span className="status-dot green" />{prediction.label}</span><span className="confidence">Confidence unavailable</span></div><p className="insight-copy">This is a five-parameter screening result based on pH, EC, TDS, hardness, and chloride. It is not a probability estimate or potability certification.</p><div className="mini-stat-list"><MiniStat label="pH" value={values.pH.toFixed(2)} status="Within range" /><MiniStat label="Hardness" value={`${Math.round(values.Total_Hardness_mgCaCO3_L)} mg/L`} status="Within range" /><MiniStat label="TDS / EC" value={`${Math.round(values.TDS_mg_L)} / ${Math.round(values.EC_uS_cm)}`} status="Ratio consistent" /></div><button className="button ghost full" onClick={() => navigate('quality')}>Open quality analysis <ArrowUpRight size={14} /></button></section>
+        <section className="panel insight-card"><div className="panel-heading compact"><div><div className="eyebrow">Latest screening</div><h2>Quality insight</h2></div><Sparkles size={17} className="cyan-icon" /></div><div className="insight-verdict"><span className="quality-badge good"><span className="status-dot green" />{prediction.label}</span><span className="confidence">Confidence unavailable</span></div><p className="insight-copy">This is a four-parameter screening result based on pH, TDS, turbidity and temperature. It is not a probability estimate or potability certification.</p><div className="mini-stat-list"><MiniStat label="pH" value={values.pH.toFixed(2)} status="Within range" /><MiniStat label="Turbidity" value={`${values.turbidity_ntu.toFixed(1)} NTU`} status="Within range" /><MiniStat label="Temperature" value={`${values.temperature_c.toFixed(1)} °C`} status="Compensation value" /></div><button className="button ghost full" onClick={() => navigate('quality')}>Open quality analysis <ArrowUpRight size={14} /></button></section>
         {role === 'admin' ? <AdminUpdatePanel updates={updates} onReviewUpdate={onReviewUpdate} /> : <section className="panel alert-card"><div className="panel-heading compact"><div><div className="eyebrow">Account workflow</div><h2>Send results to admin</h2></div><ShieldCheck size={17} className="cyan-icon" /></div><AlertItem title={location ? 'Location is attached to new tests' : 'Location is required for a site'} meta={location ? 'User updates include live coordinates' : 'Use the map button above to request access'} tone={location ? 'green' : 'amber'} /><AlertItem title="Manual values are enabled" meta="Quality inputs can be edited before submission" tone="green" /></section>}
       </div>
     </div>
@@ -784,10 +781,10 @@ function QualityPage({ values, setValues, prediction, isLive, setIsLive, locatio
     <PageHeader eyebrow="Water quality · live" title="Live quality analysis" description={location ? `Current test site · ${formatCoordinates(location)}` : 'No live location linked · set location from the overview map'} action={<div className="session-actions"><div className={`stream-state ${isLive ? 'is-live' : ''}`}><span className={`status-dot ${isLive ? 'cyan' : 'amber'}`} />{isLive ? 'Streaming' : 'Manual input'}</div><button className="button primary" onClick={() => { setCaptured(true); setIsLive(false) }}><RefreshCw size={15} /> Capture reading</button></div>} />
     <div className="quality-layout">
       <section className="panel sensor-panel"><div className="panel-heading"><div><div className="eyebrow">Quality inputs</div><h2>Current parameters</h2></div><button className="icon-button" onClick={() => setIsLive(!isLive)} aria-label={isLive ? 'Pause stream' : 'Resume stream'}>{isLive ? <span className="pause-icon">Ⅱ</span> : <Play size={16} />}</button></div><div className="stabilization"><span className={`status-dot ${captured ? 'green' : 'amber'}`} /><div><strong>{captured ? 'Reading captured' : 'Manual values ready'}</strong><span>{captured ? 'Values are ready to send to the admin account' : 'Enter calibrated sensor values, then capture the reading'}</span></div><Check size={16} /></div><div className="parameter-grid">{parameterConfig.map((config) => <ParameterTile key={config.key} config={config} value={values[config.key]} onChange={(next) => setValues((previous) => ({ ...previous, [config.key]: next }))} />)}</div><div className="sensor-footer"><div><span className="eyebrow">Site location</span><strong>{location ? formatCoordinates(location) : 'Not linked'}</strong></div><div><span className="eyebrow">Input mode</span><strong className="signal-good">Manual</strong></div><div><span className="eyebrow">Role</span><strong>{role === 'admin' ? 'Admin' : 'User'}</strong></div></div></section>
-      <section className="panel prediction-panel"><div className="panel-heading"><div><div className="eyebrow">Screening method</div><h2>Quality classification</h2></div><span className="model-label">{modelProfile.version}</span></div><div className="prediction-ring"><div className="ring-track" /><div className="ring-progress" style={{ '--confidence': '0deg' } as React.CSSProperties} /><div className="ring-content"><strong>—</strong><span>confidence not calibrated</span></div></div><div className="prediction-label"><span className="status-dot green" /><strong>{prediction.label}</strong><span>Formula-based screening from 5 measured parameters</span></div><div className="prediction-divider" /><div className="parameter-statuses">{parameterConfig.map((config) => <div className="status-line" key={config.key}><span>{config.short}</span><span className={`status-pill ${getStatus(values[config.key], config)}`}>{getStatus(values[config.key], config) === 'within' ? 'Within' : getStatus(values[config.key], config) === 'marginal' ? 'Marginal' : 'Exceeds'}</span></div>)}</div><div className="contract-note"><CircleHelp size={15} /><span>Inference contract validates feature order, units, and range before prediction. A calibrated confidence score is unavailable for this local preview.</span></div></section>
+      <section className="panel prediction-panel"><div className="panel-heading"><div><div className="eyebrow">Screening method</div><h2>Quality classification</h2></div><span className="model-label">{modelProfile.version}</span></div><div className="prediction-ring"><div className="ring-track" /><div className="ring-progress" style={{ '--confidence': '0deg' } as React.CSSProperties} /><div className="ring-content"><strong>—</strong><span>confidence not calibrated</span></div></div><div className="prediction-label"><span className="status-dot green" /><strong>{prediction.label}</strong><span>Four-parameter screening: pH, TDS, turbidity and temperature</span></div><div className="prediction-divider" /><div className="parameter-statuses">{parameterConfig.map((config) => <div className="status-line" key={config.key}><span>{config.short}</span><span className={`status-pill ${getStatus(values[config.key], config)}`}>{getStatus(values[config.key], config) === 'within' ? 'Within' : getStatus(values[config.key], config) === 'marginal' ? 'Marginal' : 'Exceeds'}</span></div>)}</div><div className="contract-note"><CircleHelp size={15} /><span>Inference contract validates pH, TDS, turbidity and temperature order, units, and ranges before prediction.</span></div></section>
       <InsightPanel prediction={prediction} values={values} role={role} location={location} onSubmit={onSubmit} />
     </div>
-    <div className="honesty-banner"><ShieldCheck size={17} /><div><strong>Screening boundary</strong><span>This result uses five sensor parameters only. Nitrate, fluoride, and heavy metals are not measured. Laboratory analysis is required for health-critical decisions.</span></div><button className="text-button">Read limitations <ArrowUpRight size={14} /></button></div>
+    <div className="honesty-banner"><ShieldCheck size={17} /><div><strong>Screening boundary</strong><span>This result uses pH, TDS, turbidity and temperature only. Bacteriological, nitrate, fluoride, hardness and heavy-metal parameters are not measured. Laboratory analysis is required for health-critical decisions.</span></div><button className="text-button">Read limitations <ArrowUpRight size={14} /></button></div>
   </>
 }
 
@@ -799,7 +796,7 @@ function ParameterTile({ config, value, onChange }: { config: ParameterConfig; v
 }
 
 function InsightPanel({ prediction, values, role, location, onSubmit }: { prediction: { label: string; confidence: number | null }; values: Record<string, number>; role: Role; location: LiveLocation | null; onSubmit: () => void }) {
-  return <section className="panel insight-panel"><div className="panel-heading"><div><div className="eyebrow">Evidence note</div><h2>Interpretation</h2></div><span className="generated-label"><Sparkles size={13} /> Local method</span></div><div className="insight-section"><span className="insight-label">VERDICT</span><p className="verdict-text">{prediction.label} screening classification. Confidence is not reported because this browser calculation is not a calibrated probability estimate.</p></div><div className="insight-section"><span className="insight-label">KEY FINDINGS</span><div className="finding-list"><Finding label="pH" value={values.pH.toFixed(2)} limit="6.5–8.5" /><Finding label="TDS" value={`${Math.round(values.TDS_mg_L)} mg/L`} limit="500 mg/L" /><Finding label="Chloride" value={`${Math.round(values.Chloride_mg_L)} mg/L`} limit="250 mg/L" /></div></div><div className="insight-section"><span className="insight-label">SUITABILITY</span><div className="suitability-grid"><Suitability label="Drinking" state="Conditional" tone="amber" /><Suitability label="Irrigation" state="Likely suitable" tone="green" /><Suitability label="Domestic" state="Likely suitable" tone="green" /></div></div><div className="insight-section"><span className="insight-label">LIMITATIONS</span><p className="limitation-text">Sensor-based screening from five parameters, not a certification of potability. Bacteriological, nitrate, fluoride, hardness beyond the measured input, and heavy-metal parameters were not measured. Laboratory analysis is required for health-critical decisions.</p></div><button className="button ghost full" onClick={onSubmit} disabled={!location}>{role === 'admin' ? 'Save admin reading' : 'Send reading and location to admin'} <ArrowUpRight size={14} /></button>{!location && <p className="submit-hint"><MapPinned size={13} /> Set live location before submitting this result.</p>}</section>
+  return <section className="panel insight-panel"><div className="panel-heading"><div><div className="eyebrow">Evidence note</div><h2>Interpretation</h2></div><span className="generated-label"><Sparkles size={13} /> Local method</span></div><div className="insight-section"><span className="insight-label">VERDICT</span><p className="verdict-text">{prediction.label} screening classification. Confidence is not reported because this browser calculation is not a calibrated probability estimate.</p></div><div className="insight-section"><span className="insight-label">KEY FINDINGS</span><div className="finding-list"><Finding label="pH" value={values.pH.toFixed(2)} limit="6.5–8.5" /><Finding label="TDS" value={`${Math.round(values.TDS_mg_L)} mg/L`} limit="500 mg/L" /><Finding label="Turbidity" value={`${values.turbidity_ntu.toFixed(1)} NTU`} limit="5 NTU" /><Finding label="Temperature" value={`${values.temperature_c.toFixed(1)} °C`} limit="15°C deviation" /></div></div><div className="insight-section"><span className="insight-label">SUITABILITY</span><div className="suitability-grid"><Suitability label="Drinking" state="Conditional" tone="amber" /><Suitability label="Irrigation" state="Likely suitable" tone="green" /><Suitability label="Domestic" state="Likely suitable" tone="green" /></div></div><div className="insight-section"><span className="insight-label">LIMITATIONS</span><p className="limitation-text">Sensor-based screening from pH, TDS, turbidity and temperature, not a certification of potability. Bacteriological, nitrate, fluoride, hardness and heavy-metal parameters were not measured. Laboratory analysis is required for health-critical decisions.</p></div><button className="button ghost full" onClick={onSubmit} disabled={!location}>{role === 'admin' ? 'Save admin reading' : 'Send reading and location to admin'} <ArrowUpRight size={14} /></button>{!location && <p className="submit-hint"><MapPinned size={13} /> Set live location before submitting this result.</p>}</section>
 }
 
 function Finding({ label, value, limit }: { label: string; value: string; limit: string }) { return <div className="finding"><span className="status-dot green" /><div><strong>{label}</strong><span>{value} <em>· limit {limit}</em></span></div><Check size={14} className="green-icon" /></div> }
@@ -960,7 +957,8 @@ function LiveMonitoringPage({ location, geoStatus, requestLocation, role }: { lo
     let disposed = false
     const connect = () => {
       if (disposed) return
-      socket = new WebSocket(`${backendUrl.replace(/^http/, 'ws')}/api/ws/measurements`)
+      const token = readStorage<string | null>('api-token', null)
+      socket = new WebSocket(`${backendUrl.replace(/^http/, 'ws')}/api/ws/measurements${token ? `?token=${encodeURIComponent(token)}` : ''}`)
       socket.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data) as { measurement?: LiveReading }
@@ -1147,7 +1145,7 @@ function AuthScreen({ accounts, onAuthenticated }: { accounts: Account[]; onAuth
       }
       try {
         const result = await backendAuth('signup', { name: name.trim(), email: normalizedEmail, mobile_number: mobileNumber.trim(), password, password_confirmation: passwordConfirmation, reminder_consent: String(reminderConsent), preferred_reminder_channel: 'email', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kolkata' })
-        const account: Account = { ...accountFromBackend(result.user), password, lastLocation: null }
+        const account: Account = { ...accountFromBackend(result.user), lastLocation: null }
         writeStorage('api-token', result.token)
         onAuthenticated(account, [...accounts, account])
         return
@@ -1157,24 +1155,13 @@ function AuthScreen({ accounts, onAuthenticated }: { accounts: Account[]; onAuth
           return
         }
       }
-      const account: Account = {
-        id: `account-${Date.now()}`,
-        name: name.trim(),
-        email: normalizedEmail,
-        password,
-        mobileNumber: mobileNumber.trim(),
-        reminderConsent,
-        preferredReminderChannel: 'email',
-        role: accounts.length === 0 ? 'admin' : 'user',
-        lastLocation: null,
-      }
-      onAuthenticated(account, [...accounts, account])
+      setError('Backend is unavailable. Local account creation is disabled so passwords are never stored in the browser.')
       return
     }
     try {
       const result = await backendAuth('signin', { email: normalizedEmail, password })
       const existing = accounts.find((candidate) => candidate.email === normalizedEmail)
-      const account: Account = existing ? { ...existing, ...accountFromBackend(result.user), password, lastLocation: existing.lastLocation } : { ...accountFromBackend(result.user), password, lastLocation: null }
+      const account: Account = existing ? { ...existing, ...accountFromBackend(result.user), lastLocation: existing.lastLocation } : { ...accountFromBackend(result.user), lastLocation: null }
       const nextAccounts = existing ? accounts.map((candidate) => candidate.id === existing.id ? account : candidate) : [...accounts, account]
       writeStorage('api-token', result.token)
       onAuthenticated(account, nextAccounts)

@@ -1,0 +1,28 @@
+{
+  "contract": "cgwb-chemistry-5",
+  "feature_order": [
+    "pH",
+    "EC_uS_cm",
+    "TDS_mg_L",
+    "Total_Hardness_mgCaCO3_L",
+    "Chloride_mg_L"
+  ],
+  "rows": 3187,
+  "classes": [
+    "Excellent",
+    "Good",
+    "Poor",
+    "Unsuitable",
+    "Very poor"
+  ],
+  "metrics": {
+    "accuracy": 0.9475996234703483,
+    "balanced_accuracy": 0.9388153134158339,
+    "macro_f1": 0.940511018539673
+  },
+  "limitations": [
+    "Formula-derived labels are not laboratory labels.",
+    "This model is not compatible with the four-sensor pH/TDS/turbidity/temperature contract.",
+    "This model is not a potability certification."
+  ]
+}

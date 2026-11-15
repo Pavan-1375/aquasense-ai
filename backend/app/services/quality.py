@@ -8,14 +8,13 @@ class StandardLimit:
     weight: float
 
 
-# Explicit weighted-arithmetic screening profile. These values are a configurable
-# project profile and must be reviewed against the laboratory standard used by the
-# deployment before health-critical decisions.
+# Four-parameter screening profile. The score is a lower-is-better normalized
+# deviation score, not a regulatory WQI or potability certification.
 SCREENING_PROFILE = {
-    "ph": StandardLimit(7.0, 8.5, 1.0),
-    "tds_mg_l": StandardLimit(0.0, 500.0, 1.0),
-    "turbidity_ntu": StandardLimit(0.0, 5.0, 1.0),
-    "temperature_c": StandardLimit(25.0, 40.0, 0.5),
+    "ph": StandardLimit(7.0, 2.0, 0.25),
+    "tds_mg_l": StandardLimit(0.0, 500.0, 0.25),
+    "turbidity_ntu": StandardLimit(0.0, 5.0, 0.25),
+    "temperature_c": StandardLimit(25.0, 15.0, 0.25),
 }
 
 
@@ -27,7 +26,11 @@ def calculate_wqi(values: dict[str, float | None]) -> tuple[float | None, str | 
         if value is None:
             missing.append(key)
             continue
-        quality = abs(float(value) - limit.ideal) / max(limit.permissible - limit.ideal, 0.001) * 100
+        if key == "ph":
+            distance = max(0.0, 6.5 - float(value), float(value) - 8.5)
+            quality = distance / limit.permissible * 100
+        else:
+            quality = abs(float(value) - limit.ideal) / max(limit.permissible, 0.001) * 100
         contributions.append((min(250.0, quality), limit.weight))
     if not contributions:
         return None, None, missing

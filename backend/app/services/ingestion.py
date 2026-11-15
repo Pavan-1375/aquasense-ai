@@ -44,6 +44,7 @@ def save_measurement_with_key(db: Session, payload: MeasurementIn, source: str =
     stale = timestamp < now - timedelta(hours=get_settings().stale_measurement_hours)
     station = db.get(Station, device.station_id) if device.station_id else None
     measurement = Measurement(
+        owner_id=station.owner_id if station else None,
         device_id=payload.device_id,
         station_id=device.station_id,
         timestamp=timestamp,
@@ -66,7 +67,7 @@ def save_measurement_with_key(db: Session, payload: MeasurementIn, source: str =
     db.add(measurement)
     pending_title = f"Device review required · {device.device_id}"
     if not db.query(Alert).filter(Alert.title == pending_title, Alert.state == "active").first():
-        db.add(Alert(station_id=device.station_id, severity="info", title=pending_title, detail="A new ESP32 reading is waiting for administrator review. Attach proof and promote it only after verification."))
+        db.add(Alert(owner_id=station.owner_id if station else None, station_id=device.station_id, severity="info", title=pending_title, detail="A new ESP32 reading is waiting for administrator review. Attach proof and promote it only after verification."))
     try:
         db.flush()
         if idempotency_key:

@@ -1,14 +1,13 @@
 # AquaSense AI (HydroInsight)
 
-HydroInsight is a schema-driven water quality and groundwater monitoring dashboard. The frontend is wired to a trained quality screening profile with simulated live readings for five configured parameters:
+HydroInsight is a schema-driven water quality and groundwater monitoring dashboard. The active quality screening profile uses four configured parameters:
 
 - pH
-- EC / conductivity (µS/cm)
-- TDS (mg/L)
-- total hardness (mg/L as CaCO3)
-- chloride (mg/L)
+- TDS (ppm)
+- turbidity (NTU)
+- temperature (°C)
 
-The quality artifact is a five-class XGBoost classifier trained from 3,218 complete records in the supplied CGWB Andhra Pradesh and Karnataka chemistry CSVs. Labels are generated with a weighted-arithmetic WQI formula, and the model metadata is saved in `ml/artifacts/quality_model_metadata.json`. Replace the artifact only after evaluating a new model with the same inference contract.
+The saved chemistry artifact is not compatible with this active four-parameter profile and is rejected by the inference contract. The backend currently performs transparent formula-based screening. A trained classifier must only be enabled after a compatible pH/TDS/turbidity/temperature dataset and independent labels are supplied.
 
 ## Run
 
@@ -21,7 +20,7 @@ For a reproducible container stack, review the included `docker-compose.yml`. It
 
 ## Important production boundary
 
-The UI describes predictions as sensor-based screening. It does not claim potability and explicitly notes that nitrate, fluoride, and heavy-metal parameters are not measured by this five-input profile. A real backend should reject inference requests unless the feature vector matches the model's expected feature names, order, units, and valid sensor ranges. `ml/quality_inference.py` provides that validation.
+The UI describes predictions as four-parameter sensor-based screening. It does not claim potability and explicitly notes that bacteriological, nitrate, fluoride, hardness and heavy-metal parameters are not measured. The backend rejects inference requests unless the feature vector matches pH, TDS, turbidity and temperature in the expected order and ranges. `ml/quality_inference.py` provides that validation.
 
 ## Prototype account and location flow
 
@@ -29,7 +28,7 @@ The UI describes predictions as sensor-based screening. It does not claim potabi
 - The map is a Leaflet map with street, satellite, and terrain tile layers. Users can select a precise point or two-corner area, search a city/address manually, request browser geolocation, and see country, state, district, and city/town fields for a selected place.
 - Search uses OpenStreetMap Nominatim only after the user submits a place query. Reverse-geocoding a precise map-selected coordinate is an explicit `Identify area` action rather than an automatic background request.
 - The browser requests live location through `navigator.geolocation`, watches for updates, and uses the current coordinates as the test site.
-- Quality inputs are editable numeric fields. A user submission stores the five values, timestamp, role, and live coordinates, then appears in the admin inbox.
+- Quality inputs are editable numeric fields. A user submission stores pH, TDS, turbidity and temperature, timestamp, role, and live coordinates, then appears in the admin inbox.
 - Bright/dark preference, accounts, sessions, locations, and updates are stored in browser `localStorage` for this prototype.
 
 This is a front-end prototype flow. Cross-device authentication and shared admin updates require a backend with password hashing, authorization, a database, and a map/location privacy policy; `localStorage` is intentionally not presented as production account storage.
@@ -79,7 +78,7 @@ POST /api/admin/submissions/{id}/review
 - `backend/bridge/serial_bridge.py` reads newline-delimited JSON from a configurable COM port and forwards validated payloads to `/api/ingest/http`.
 - `iot/esp32_water_level_example.ino` shows the additive JSON serial integration. It does not replace the existing OLED firmware.
 - `backend/scripts/import_dataset.py <path-to-csv>` inspects datetime, station and groundwater-level candidates before any import mapping is applied.
-- `ml/artifacts/` contains the current five-parameter quality profile. Groundwater forecasting uses a labelled transparent fallback until a compatible trained groundwater artifact is configured.
+- `ml/artifacts/` may contain historical artifacts, but only an artifact matching the active four-parameter contract is accepted. Groundwater forecasting uses a labelled transparent fallback until a compatible trained groundwater artifact is configured.
 - `backend/migrations/` contains the non-destructive Alembic baseline, and `backend/scripts/run_worker.py` runs reminder work independently of the API when a separate process is preferred.
 
 The frontend reads `VITE_API_URL` from the environment; `.env.example` contains the local default. CI is configured in `.github/workflows/ci.yml` for the frontend build, backend compilation and service tests.

@@ -41,16 +41,20 @@ def predict_quality(payload: dict[str, Any], artifact_path: str | Path) -> dict[
     artifact = joblib.load(artifact_path)
     values = validate_feature_vector(payload, artifact)
     frame = pd.DataFrame([values], columns=artifact["feature_order"])
-    encoded = int(artifact["model"].predict(frame)[0])
+    raw_prediction = artifact["model"].predict(frame)[0]
+    encoded = int(raw_prediction) if isinstance(raw_prediction, (int, np.integer)) else raw_prediction
     probabilities = artifact["model"].predict_proba(frame)[0]
-    label = artifact["class_mapping"][str(encoded)]
+    if isinstance(encoded, str):
+        label = encoded
+        probability_labels = list(getattr(artifact["model"], "classes_", artifact.get("classes", [])))
+        probabilities_by_label = {str(name): round(float(probability), 4) for name, probability in zip(probability_labels, probabilities)}
+    else:
+        label = artifact["class_mapping"][str(encoded)]
+        probabilities_by_label = {artifact["class_mapping"][str(index)]: round(float(probability), 4) for index, probability in enumerate(probabilities)}
     return {
         "class": label,
         "confidence": round(float(np.max(probabilities)), 4),
-        "probabilities": {
-            artifact["class_mapping"][str(index)]: round(float(probability), 4)
-            for index, probability in enumerate(probabilities)
-        },
+        "probabilities": probabilities_by_label,
         "feature_order": artifact["feature_order"],
         "model_type": artifact.get("model_type", "xgboost"),
     }

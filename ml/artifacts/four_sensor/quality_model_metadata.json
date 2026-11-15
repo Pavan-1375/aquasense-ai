@@ -1,0 +1,86 @@
+{
+  "model_type": "random_forest",
+  "feature_order": [
+    "pH",
+    "TDS_mg_L",
+    "Turbidity_NTU",
+    "Temperature_C"
+  ],
+  "classes": [
+    "Excellent",
+    "Good",
+    "Poor",
+    "Very poor",
+    "Unsuitable"
+  ],
+  "formula": "Weighted arithmetic screening score over pH, TDS, turbidity, and temperature",
+  "limits": {
+    "pH": {
+      "ideal": 7.0,
+      "lower": 6.5,
+      "upper": 8.5,
+      "weight_limit": 1.5
+    },
+    "TDS_mg_L": {
+      "ideal": 0.0,
+      "upper": 500.0,
+      "weight_limit": 500.0
+    },
+    "Turbidity_NTU": {
+      "ideal": 0.0,
+      "upper": 5.0,
+      "weight_limit": 5.0
+    },
+    "Temperature_C": {
+      "ideal": 25.0,
+      "upper": 40.0,
+      "weight_limit": 15.0
+    }
+  },
+  "source_files": [
+    "data\\external\\water_quality_four_parameter.csv"
+  ],
+  "complete_rows": 300,
+  "label_distribution": {
+    "Excellent": 103,
+    "Good": 87,
+    "Unsuitable": 75,
+    "Very poor": 18,
+    "Poor": 17
+  },
+  "wqi_range": [
+    1.0553,
+    391.2568
+  ],
+  "feature_importance": {
+    "pH": 0.287474,
+    "TDS_mg_L": 0.086377,
+    "Turbidity_NTU": 0.551278,
+    "Temperature_C": 0.074871
+  },
+  "metrics": {
+    "logistic_regression": {
+      "accuracy": 0.84,
+      "macro_f1": 0.7179,
+      "weighted_f1": 0.8482,
+      "balanced_accuracy": 0.7313
+    },
+    "random_forest": {
+      "accuracy": 0.91,
+      "macro_f1": 0.8309,
+      "weighted_f1": 0.9127,
+      "balanced_accuracy": 0.8464
+    },
+    "extra_trees": {
+      "accuracy": 0.91,
+      "macro_f1": 0.823,
+      "weighted_f1": 0.9132,
+      "balanced_accuracy": 0.8366
+    }
+  },
+  "limitations": [
+    "Labels are derived from the documented screening formula, not clinician- or regulator-confirmed classes.",
+    "The supplied CGWB chemistry files are not compatible with this four-parameter contract because they do not provide turbidity and temperature.",
+    "The result is not a potability certification and does not include microbiological testing."
+  ]
+}

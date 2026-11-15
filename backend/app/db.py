@@ -31,7 +31,11 @@ def init_db() -> None:
         if settings.database_url.startswith("sqlite"):
             existing = {column["name"] for column in inspect(engine).get_columns("measurements")}
             with engine.begin() as connection:
-                for name, sql_type in (("site_latitude", "FLOAT"), ("site_longitude", "FLOAT"), ("site_accuracy_m", "FLOAT"), ("location_updated_at", "DATETIME")):
+                for name, sql_type in (("site_latitude", "FLOAT"), ("site_longitude", "FLOAT"), ("site_accuracy_m", "FLOAT"), ("location_updated_at", "DATETIME"), ("owner_id", "VARCHAR(36)")):
                     if name not in existing:
                         connection.execute(text(f"ALTER TABLE measurements ADD COLUMN {name} {sql_type}"))
+                for table in ("stations", "quality_observations", "alerts"):
+                    columns = {column["name"] for column in inspect(engine).get_columns(table)}
+                    if "owner_id" not in columns:
+                        connection.execute(text(f"ALTER TABLE {table} ADD COLUMN owner_id VARCHAR(36)"))
 

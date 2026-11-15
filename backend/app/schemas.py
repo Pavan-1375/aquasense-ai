@@ -80,7 +80,7 @@ class UserOut(BaseModel):
 
 
 class AuthResponse(BaseModel):
-    token: str
+    token: str | None = None
     user: UserOut
 
 
@@ -207,6 +207,7 @@ class MeasurementOut(MeasurementIn):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
+    owner_id: str | None = None
     station_id: str | None
     site_latitude: float | None = None
     site_longitude: float | None = None

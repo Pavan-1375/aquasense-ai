@@ -83,6 +83,7 @@ class Station(Base):
     __tablename__ = "stations"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    owner_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(160), index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     country: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -114,6 +115,7 @@ class Measurement(Base):
     __table_args__ = (UniqueConstraint("device_id", "timestamp", name="uq_measurement_device_timestamp"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    owner_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     device_id: Mapped[str] = mapped_column(String(100), ForeignKey("devices.device_id"), index=True)
     station_id: Mapped[str | None] = mapped_column(ForeignKey("stations.id"), nullable=True, index=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, index=True)
@@ -147,6 +149,7 @@ class QualityObservation(Base):
     __tablename__ = "quality_observations"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    owner_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     station_id: Mapped[str | None] = mapped_column(ForeignKey("stations.id"), nullable=True, index=True)
     measured_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     ph: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -183,6 +186,7 @@ class Alert(Base):
     __tablename__ = "alerts"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    owner_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     station_id: Mapped[str | None] = mapped_column(ForeignKey("stations.id"), nullable=True, index=True)
     severity: Mapped[str] = mapped_column(String(20), default="info")
     title: Mapped[str] = mapped_column(String(180))
