@@ -45,8 +45,8 @@ class Settings(BaseSettings):
             raise RuntimeError("Production requires PostgreSQL; SQLite is local development only")
         if not self.app_base_url.startswith("https://"):
             raise RuntimeError("Production APP_BASE_URL must use HTTPS")
-        if self.email_provider == "development" or self.sms_provider == "development":
-            raise RuntimeError("Production requires configured email_provider and sms_provider")
+        if self.email_provider == "development":
+            raise RuntimeError("Production requires a configured email_provider")
         if "localhost" in self.cors_origins or "127.0.0.1" in self.cors_origins:
             raise RuntimeError("Production CORS_ORIGINS must not contain localhost origins")
 
