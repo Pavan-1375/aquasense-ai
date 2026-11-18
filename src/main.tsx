@@ -1029,7 +1029,7 @@ function DevicesStationsPage({ role, location }: { role: Role; location: LiveLoc
 }
 
 function EducationPage() {
-  return <><PageHeader eyebrow="Learn · resources" title="Education and resources" description="Practical guidance for interpreting sensor screening and groundwater trends." /><div className="module-grid three"><section className="panel resource-card"><span className="resource-icon"><Droplets size={18} /></span><h2>Understand WQI</h2><p>WQI is a configurable weighted screening calculation. The selected profile, units and missing parameters must be visible beside every score.</p><button className="text-button">View methodology <ArrowUpRight size={14} /></button></section><section className="panel resource-card"><span className="resource-icon"><Gauge size={18} /></span><h2>Read depletion risk</h2><p>Use consistent station readings, seasonal context and uncertainty. A transparent fallback is not the same as a trained forecast.</p><button className="text-button">View forecast guidance <ArrowUpRight size={14} /></button></section><section className="panel resource-card"><span className="resource-icon"><ShieldCheck size={18} /></span><h2>Know the boundary</h2><p>pH, EC, TDS, hardness and chloride cannot prove potability. Laboratory tests remain necessary for health-critical decisions.</p><button className="text-button">View limitations <ArrowUpRight size={14} /></button></section></div></>
+  return <><PageHeader eyebrow="Learn · resources" title="Education and resources" description="Practical guidance for interpreting sensor screening and groundwater trends." /><div className="module-grid three"><section className="panel resource-card"><span className="resource-icon"><Droplets size={18} /></span><h2>Understand quality screening</h2><p>The current screening profile uses pH, TDS, turbidity and temperature. It is not a potability certification; laboratory testing remains necessary for health-critical decisions.</p><button className="text-button">View methodology <ArrowUpRight size={14} /></button></section><section className="panel resource-card"><span className="resource-icon"><Gauge size={18} /></span><h2>Read depletion risk</h2><p>Use consistent station readings, seasonal context and uncertainty. A transparent temporal trend forecast is not the same as a trained forecasting model.</p><button className="text-button">View forecast guidance <ArrowUpRight size={14} /></button></section><section className="panel resource-card"><span className="resource-icon"><ShieldCheck size={18} /></span><h2>Review the evidence boundary</h2><p>Every reading keeps its source, timestamp, location, validation state and approval history. Unapproved readings are excluded from official analytics.</p><button className="text-button">View limitations <ArrowUpRight size={14} /></button></section></div></>
 }
 
 function HelpPage() {
@@ -1100,7 +1100,10 @@ function AuthScreen({ accounts, onAuthenticated }: { accounts: Account[]; onAuth
     if (mode === 'forgot') {
       if (!resetToken) {
         try {
-          const response = await fetch(`${backendUrl}/api/auth/forgot-password`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: normalizedEmail }) })
+          const headers = new Headers({ 'Content-Type': 'application/json' })
+          const csrf = document.cookie.split('; ').find((item) => item.startsWith('aquasense_csrf='))?.split('=')[1]
+          if (csrf) headers.set('X-CSRF-Token', decodeURIComponent(csrf))
+          const response = await fetch(`${backendUrl}/api/auth/forgot-password`, { method: 'POST', headers, body: JSON.stringify({ email: normalizedEmail }), credentials: 'include' })
           const data = await response.json().catch(() => ({})) as { message?: string; development_token?: string; detail?: string }
           if (!response.ok) throw new Error(data.detail || 'Unable to start password reset')
           setResetToken(data.development_token || '')
@@ -1115,7 +1118,10 @@ function AuthScreen({ accounts, onAuthenticated }: { accounts: Account[]; onAuth
         return
       }
       try {
-        const response = await fetch(`${backendUrl}/api/auth/reset-password`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: resetToken, new_password: password }) })
+          const headers = new Headers({ 'Content-Type': 'application/json' })
+          const csrf = document.cookie.split('; ').find((item) => item.startsWith('aquasense_csrf='))?.split('=')[1]
+          if (csrf) headers.set('X-CSRF-Token', decodeURIComponent(csrf))
+          const response = await fetch(`${backendUrl}/api/auth/reset-password`, { method: 'POST', headers, body: JSON.stringify({ token: resetToken, new_password: password }), credentials: 'include' })
         const data = await response.json().catch(() => ({})) as { message?: string; detail?: string }
         if (!response.ok) throw new Error(data.detail || 'Unable to reset password')
         setMode('signin')

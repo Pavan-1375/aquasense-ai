@@ -7,7 +7,14 @@ HydroInsight is a schema-driven water quality and groundwater monitoring dashboa
 - turbidity (NTU)
 - temperature (°C)
 
-The saved chemistry artifact is not compatible with this active four-parameter profile and is rejected by the inference contract. The backend currently performs transparent formula-based screening. A trained classifier must only be enabled after a compatible pH/TDS/turbidity/temperature dataset and independent labels are supplied.
+## Final project objectives
+
+1. Develop a machine-learning-assisted system for groundwater-quality assessment using key water-quality parameters.
+2. Monitor borewell water levels through IoT-based sensing and analyze temporal variations to assess potential groundwater-depletion risks.
+3. Design and implement an integrated platform for groundwater monitoring, data management, visualization, and intelligent analysis.
+4. Enhance monitoring reliability and accountability through data validation, monitoring controls, auditability, and systematic reporting.
+
+The active artifact is a compatible Extra Trees classifier trained on 300 four-parameter records. Its classes are derived from the documented screening formula, not independent laboratory labels, so it is a screening aid and not a potability certification.
 
 ## Run
 
@@ -29,9 +36,7 @@ The UI describes predictions as four-parameter sensor-based screening. It does n
 - Search uses OpenStreetMap Nominatim only after the user submits a place query. Reverse-geocoding a precise map-selected coordinate is an explicit `Identify area` action rather than an automatic background request.
 - The browser requests live location through `navigator.geolocation`, watches for updates, and uses the current coordinates as the test site.
 - Quality inputs are editable numeric fields. A user submission stores pH, TDS, turbidity and temperature, timestamp, role, and live coordinates, then appears in the admin inbox.
-- Bright/dark preference, accounts, sessions, locations, and updates are stored in browser `localStorage` for this prototype.
-
-This is a front-end prototype flow. Cross-device authentication and shared admin updates require a backend with password hashing, authorization, a database, and a map/location privacy policy; `localStorage` is intentionally not presented as production account storage.
+- Bright/dark preference is stored in the browser; accounts, sessions, locations, observations, reviews, alerts and reports are persisted by the FastAPI backend database.
 
 ## Full-stack backend
 
@@ -78,7 +83,7 @@ POST /api/admin/submissions/{id}/review
 - `backend/bridge/serial_bridge.py` reads newline-delimited JSON from a configurable COM port and forwards validated payloads to `/api/ingest/http`.
 - `iot/esp32_water_level_example.ino` shows the additive JSON serial integration. It does not replace the existing OLED firmware.
 - `backend/scripts/import_dataset.py <path-to-csv>` inspects datetime, station and groundwater-level candidates before any import mapping is applied.
-- `ml/artifacts/` may contain historical artifacts, but only an artifact matching the active four-parameter contract is accepted. Groundwater forecasting uses a labelled transparent fallback until a compatible trained groundwater artifact is configured.
+- `ml/artifacts/` contains the active four-parameter quality artifact and clearly separated historical artifacts. Groundwater forecasting currently uses a labelled transparent temporal-trend baseline until a compatible trained groundwater artifact is configured.
 - `backend/migrations/` contains the non-destructive Alembic baseline, and `backend/scripts/run_worker.py` runs reminder work independently of the API when a separate process is preferred.
 
 The frontend reads `VITE_API_URL` from the environment; `.env.example` contains the local default. CI is configured in `.github/workflows/ci.yml` for the frontend build, backend compilation and service tests.

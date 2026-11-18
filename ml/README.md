@@ -18,4 +18,4 @@ python ml/train_quality_model.py `
   "C:\Users\Acer\Downloads\gwq_chemical_parameter_manual_cgwb_ap_1961_2025.csv"
 ```
 
-The model is a screening classifier trained on formula-derived labels. It must not be presented as a laboratory or potability certification.
+The active artifact is an Extra Trees screening classifier trained on 300 compatible four-parameter records. Its labels are formula-derived, not laboratory-derived. Report the model as screening support, never as laboratory agreement or potability certification. The backend records the model version as `extra-trees-four-parameter-0.2`.
