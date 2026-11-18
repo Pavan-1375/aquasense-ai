@@ -168,6 +168,24 @@ const initialValues: Record<string, number> = {
 const storageKey = (key: string) => `hydroinsight:${key}`
 const backendUrl = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000'
 
+function formatApiDetail(detail: unknown, fallback: string): string {
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (Array.isArray(detail)) {
+    const messages = detail.map((item) => {
+      if (typeof item === 'string') return item
+      if (item && typeof item === 'object') {
+        const record = item as { msg?: unknown; loc?: unknown }
+        const location = Array.isArray(record.loc) ? record.loc.filter(Boolean).join('.') : ''
+        return `${location ? `${location}: ` : ''}${typeof record.msg === 'string' ? record.msg : JSON.stringify(item)}`
+      }
+      return String(item)
+    }).filter(Boolean)
+    if (messages.length) return messages.join(' ')
+  }
+  if (detail && typeof detail === 'object') return JSON.stringify(detail)
+  return fallback
+}
+
 function readStorage<T>(key: string, fallback: T): T {
   try {
     const stored = window.localStorage.getItem(storageKey(key))
@@ -193,7 +211,7 @@ async function backendAuth(endpoint: 'signup' | 'signin', payload: Record<string
   if (csrf) headers.set('X-CSRF-Token', decodeURIComponent(csrf))
   const response = await fetch(`${backendUrl}/api/auth/${endpoint}`, { method: 'POST', headers, body: JSON.stringify(payload), credentials: 'include' })
   const data = await response.json().catch(() => ({})) as { token?: string; user?: { id: string; name: string; email: string; role: Role; mobile_number?: string; email_verified?: boolean; mobile_verified?: boolean; reminder_consent?: boolean; preferred_reminder_channel?: 'email' | 'sms' | 'both'; timezone?: string }; detail?: string }
-  if (!response.ok) throw new Error(data.detail || `Backend ${endpoint} failed`)
+  if (!response.ok) throw new Error(formatApiDetail(data.detail, `Backend ${endpoint} failed`))
   const user = data.user
   if (!user) throw new Error('Backend returned an incomplete authentication response')
   return { token: data.token, user }
@@ -206,7 +224,7 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
   if (csrf) headers.set('X-CSRF-Token', decodeURIComponent(csrf))
   const response = await fetch(`${backendUrl}${path}`, { ...options, headers, credentials: 'include' })
   const data = await response.json().catch(() => ({})) as T & { detail?: string }
-  if (!response.ok) throw new Error(data.detail || `Request failed (${response.status})`)
+  if (!response.ok) throw new Error(formatApiDetail(data.detail, `Request failed (${response.status})`))
   return data
 }
 
