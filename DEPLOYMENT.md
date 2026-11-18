@@ -20,3 +20,7 @@ Put the real values in the hosting provider's secret manager or an untracked `.e
 Password recovery sends through SMTP or Twilio in production. Development-only reset links and OTPs are never returned when `APP_ENV=production`.
 
 Provider failover is intentionally not automatic across unrelated vendors: silently switching providers can misroute messages and create duplicate OTPs. Configure provider-level retry/backup routing at the vendor or add a second adapter with verified credentials and an explicit policy.
+
+## Railway backend
+
+`railway.json` configures the FastAPI Docker service and `/api/health` health check. Create a Railway project from the GitHub repository, keep the service private, and add the same production variables in the Railway Variables panel. Generate a Railway domain only when you are ready to connect the frontend.
