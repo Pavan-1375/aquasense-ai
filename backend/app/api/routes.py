@@ -82,6 +82,8 @@ from ..services.recovery_delivery import send_reset_email, send_reset_sms
 
 
 router = APIRouter(prefix="/api")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+QUALITY_MODEL_DIR = PROJECT_ROOT / "ml" / "artifacts"
 settings = get_settings()
 
 
@@ -194,7 +196,7 @@ def _quality_warnings(payload: SubmissionCreate) -> list[dict[str, str]]:
 
 
 def _run_quality_model(quality: dict) -> dict:
-    artifact = Path("ml/artifacts/quality_model.joblib")
+    artifact = QUALITY_MODEL_DIR / "quality_model.joblib"
     if not artifact.exists():
         return {"status": "fallback", "reason": "compatible model artifact unavailable"}
     required = {"pH": quality.get("ph"), "TDS_mg_L": quality.get("tds_mg_l"), "Turbidity_NTU": quality.get("turbidity_ntu"), "Temperature_C": quality.get("temperature_c")}
@@ -216,7 +218,7 @@ def health(request: Request, db: Session = Depends(get_db)) -> dict:
         database_status = "error"
     scheduler_enabled = bool(settings.scheduler_enabled)
     scheduler_running = bool(getattr(request.app.state, "reminder_worker_running", False))
-    artifact_status = "available" if Path("ml/artifacts/quality_model_metadata.json").exists() else "unavailable"
+    artifact_status = "available" if (QUALITY_MODEL_DIR / "quality_model_metadata.json").exists() else "unavailable"
     overall = "ok" if database_status == "ok" else "degraded"
     return {
         "status": overall,
