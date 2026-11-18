@@ -4,7 +4,9 @@ WORKDIR /app/backend
 COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend ./
+COPY ml /app/ml
 
+ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 ENV SCHEMA_AUTO_CREATE=false
 EXPOSE 8000
