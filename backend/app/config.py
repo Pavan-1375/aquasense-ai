@@ -17,6 +17,14 @@ class Settings(BaseSettings):
     email_from: str = "AquaSense AI <no-reply@example.local>"
     sms_provider: str = "development"
     sms_from: str = "AquaSense AI"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_from_number: str = ""
     upload_dir: str = "backend/uploads"
     max_upload_mb: int = 10
     stale_measurement_hours: int = 24

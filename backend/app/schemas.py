@@ -86,6 +86,7 @@ class AuthResponse(BaseModel):
 
 class ForgotPassword(BaseModel):
     email: str = Field(min_length=5, max_length=255)
+    channel: Literal["email", "sms"] = "email"
 
     @field_validator("email")
     @classmethod
@@ -96,6 +97,17 @@ class ForgotPassword(BaseModel):
 class ResetPassword(BaseModel):
     token: str = Field(min_length=12, max_length=128)
     new_password: str = Field(min_length=8, max_length=128)
+
+
+class SmsPasswordReset(BaseModel):
+    email: str = Field(min_length=5, max_length=255)
+    otp: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+    new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return value.strip().lower()
 
 
 class StationCreate(BaseModel):

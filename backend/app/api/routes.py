@@ -24,6 +24,7 @@ from ..models import (
     ModelExecutionRecord,
     NotificationDelivery,
     PasswordResetToken,
+    PasswordRecoveryCode,
     QualityObservation,
     ReminderSchedule,
     SessionToken,
@@ -58,6 +59,7 @@ from ..schemas import (
     ReminderScheduleOut,
     SignIn,
     ResetPassword,
+    SmsPasswordReset,
     SubmissionCreate,
     SubmissionListResponse,
     SubmissionOut,
@@ -76,6 +78,7 @@ from ..services.ingestion import save_measurement, save_measurement_with_key
 from ..services.quality import calculate_wqi
 from ml.quality_inference import predict_quality
 from ..services.reminders import ensure_schedule, next_occurrence, run_reminder_cycle
+from ..services.recovery_delivery import send_reset_email, send_reset_sms
 
 
 router = APIRouter(prefix="/api")
@@ -272,15 +275,38 @@ def signin(payload: SignIn, response: Response, db: Session = Depends(get_db)) -
 @router.post("/auth/forgot-password")
 def forgot_password(payload: ForgotPassword, db: Session = Depends(get_db)) -> dict:
     user = db.query(User).filter(User.email == payload.email).first()
-    response = {"status": "accepted", "message": "If the account exists, reset instructions are ready."}
+    response = {"status": "accepted", "channel": payload.channel, "message": "If the account exists, recovery instructions are ready."}
     if not user:
         return response
-    token = secrets.token_urlsafe(32)
-    db.add(PasswordResetToken(token=token, user_id=user.id, expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=30)))
+    expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=30)
+    if payload.channel == "email":
+        token = secrets.token_urlsafe(32)
+        db.add(PasswordResetToken(token=token, user_id=user.id, expires_at=expires_at))
+        response["reset_link"] = f"{settings.app_base_url}/?reset_token={token}"
+        if settings.app_env != "production":
+            response["development_link"] = response["reset_link"]
+            response["development_token"] = token
+            response["message"] = "Development fallback: use the reset link below. Configure email delivery for production."
+        else:
+            try:
+                send_reset_email(user.email, response["reset_link"])
+            except RuntimeError:
+                raise HTTPException(status_code=503, detail="Email recovery delivery is not configured")
+    else:
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        db.add(PasswordRecoveryCode(user_id=user.id, code_hash=_otp_hash(code), expires_at=expires_at))
+        if settings.app_env != "production":
+            response["development_otp"] = code
+            response["message"] = "Development fallback: use the returned SMS OTP. Configure an SMS provider for production."
+        else:
+            contact = db.query(UserContact).filter(UserContact.user_id == user.id).first()
+            if not contact:
+                raise HTTPException(status_code=400, detail="No registered mobile number is available")
+            try:
+                send_reset_sms(contact.mobile_e164, code)
+            except RuntimeError:
+                raise HTTPException(status_code=503, detail="SMS recovery delivery is not configured")
     db.commit()
-    if settings.app_env != "production":
-        response["development_token"] = token
-        response["message"] = "Development fallback: use the returned token in the reset form. Configure email delivery for production."
     return response
 
 
@@ -295,6 +321,24 @@ def reset_password(payload: ResetPassword, db: Session = Depends(get_db)) -> dic
         raise HTTPException(status_code=400, detail="Reset token is invalid")
     user.password_hash = hash_password(payload.new_password)
     reset.used = True
+    db.query(SessionToken).filter(SessionToken.user_id == user.id).delete(synchronize_session=False)
+    db.commit()
+    return {"status": "password_reset", "message": "Password updated. Sign in with the new password."}
+
+
+@router.post("/auth/reset-password-sms")
+def reset_password_sms(payload: SmsPasswordReset, db: Session = Depends(get_db)) -> dict:
+    user = db.query(User).filter(User.email == payload.email).first()
+    recovery = db.query(PasswordRecoveryCode).filter(PasswordRecoveryCode.user_id == (user.id if user else ""), PasswordRecoveryCode.used.is_(False)).order_by(PasswordRecoveryCode.created_at.desc()).first()
+    now = utc_now()
+    if not recovery or recovery.expires_at < now or recovery.attempts >= 5:
+        raise HTTPException(status_code=400, detail="SMS OTP is invalid or expired")
+    recovery.attempts += 1
+    if recovery.code_hash != _otp_hash(payload.otp):
+        db.commit()
+        raise HTTPException(status_code=400, detail="SMS OTP is invalid")
+    recovery.used = True
+    user.password_hash = hash_password(payload.new_password)
     db.query(SessionToken).filter(SessionToken.user_id == user.id).delete(synchronize_session=False)
     db.commit()
     return {"status": "password_reset", "message": "Password updated. Sign in with the new password."}
