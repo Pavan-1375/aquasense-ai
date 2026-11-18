@@ -282,14 +282,14 @@ def forgot_password(payload: ForgotPassword, db: Session = Depends(get_db)) -> d
     if payload.channel == "email":
         token = secrets.token_urlsafe(32)
         db.add(PasswordResetToken(token=token, user_id=user.id, expires_at=expires_at))
-        response["reset_link"] = f"{settings.app_base_url}/?reset_token={token}"
+        reset_link = f"{settings.app_base_url}/?reset_token={token}"
         if settings.app_env != "production":
-            response["development_link"] = response["reset_link"]
+            response["development_link"] = reset_link
             response["development_token"] = token
             response["message"] = "Development fallback: use the reset link below. Configure email delivery for production."
         else:
             try:
-                send_reset_email(user.email, response["reset_link"])
+                send_reset_email(user.email, reset_link)
             except RuntimeError:
                 raise HTTPException(status_code=503, detail="Email recovery delivery is not configured")
     else:

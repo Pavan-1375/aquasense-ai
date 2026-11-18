@@ -37,8 +37,18 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=(".env", "backend/.env"), extra="ignore")
 
     def validate_production_secrets(self) -> None:
-        if self.app_env.lower() == "production" and (self.secret_key == "development-only-change-me" or self.device_ingest_key == "local-device-key"):
+        if self.app_env.lower() != "production":
+            return
+        if self.secret_key == "development-only-change-me" or self.device_ingest_key == "local-device-key":
             raise RuntimeError("Production requires non-default SECRET_KEY and DEVICE_INGEST_KEY")
+        if self.database_url.startswith("sqlite"):
+            raise RuntimeError("Production requires PostgreSQL; SQLite is local development only")
+        if not self.app_base_url.startswith("https://"):
+            raise RuntimeError("Production APP_BASE_URL must use HTTPS")
+        if self.email_provider == "development" or self.sms_provider == "development":
+            raise RuntimeError("Production requires configured email_provider and sms_provider")
+        if "localhost" in self.cors_origins or "127.0.0.1" in self.cors_origins:
+            raise RuntimeError("Production CORS_ORIGINS must not contain localhost origins")
 
     @property
     def cors_origin_list(self) -> list[str]:
