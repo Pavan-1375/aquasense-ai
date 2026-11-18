@@ -57,6 +57,15 @@ unplugged and reconnected:
 
 ```powershell
 py -3 backend/bridge/auto_bridge.py --device-id ESP32-001 --device-key local-device-key
+
+For the deployed Railway API on Windows, set the device key without committing it and use the project launcher:
+
+```powershell
+$env:ESP32_INGEST_KEY = "<the device's Railway ingest key>"
+.\scripts\start-esp32-bridge.ps1
+```
+
+The bridge must run on the computer physically connected to the ESP32 USB cable. Railway cannot access a local COM port. It automatically detects supported USB serial adapters, reconnects after unplug/replug, accepts the current OLED text format or JSON lines, and forwards validated readings to Railway.
 ```
 
 Firmware upload is intentionally opt-in because it overwrites the program
