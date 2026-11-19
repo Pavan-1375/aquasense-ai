@@ -934,8 +934,6 @@ def list_measurements(station_id: str | None = None, status: str | None = None, 
     query = db.query(Measurement)
     if user.role != "admin":
         query = query.filter(Measurement.owner_id == user.id)
-        # Owners may inspect their own pending submissions in Live Monitoring,
-        # while the normal history endpoint continues to expose approved data.
         query = query.filter(Measurement.quality_status == (status or "reviewed"))
     elif status:
         query = query.filter(Measurement.quality_status == status)
