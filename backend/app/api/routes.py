@@ -761,6 +761,12 @@ def create_device(payload: DeviceCreate, db: Session = Depends(get_db), user: Us
 @router.post("/ingest/http", response_model=MeasurementOut, status_code=201)
 async def ingest_http(payload: MeasurementIn, x_device_key: Annotated[str | None, Header()] = None, x_idempotency_key: Annotated[str | None, Header()] = None, db: Session = Depends(get_db)) -> Measurement:
     device = db.query(Device).filter(Device.device_id == payload.device_id).first()
+    # The deployment key can securely provision the first known ESP32 device.
+    # The measurement remains pending_review and still requires admin approval.
+    if device is None and x_device_key and secrets.compare_digest(x_device_key, settings.device_ingest_key):
+        device = Device(device_id=payload.device_id, name=f"{payload.device_id} ultrasonic level sensor", device_type="ESP32", ingest_key=x_device_key, status="online")
+        db.add(device)
+        db.flush()
     allowed = bool(x_device_key and device and secrets.compare_digest(x_device_key, device.ingest_key))
     if not allowed:
         raise HTTPException(status_code=401, detail="Valid device ingestion key required")
