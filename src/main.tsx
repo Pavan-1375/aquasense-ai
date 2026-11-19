@@ -963,19 +963,12 @@ function LiveMonitoringPage({ location, geoStatus, requestLocation, role }: { lo
   }
   const load = async () => {
     try {
-      const next = await apiFetch<LiveReading[]>('/api/measurements?limit=20')
+      const next = await apiFetch<LiveReading[]>('/api/measurements?status=pending_review&limit=20')
       acceptReadings(next)
     } catch {
-      // Local preview sessions may predate backend authentication. Keep the
-      // preview useful in development without weakening production routes.
-      try {
-        const response = await fetch(`${backendUrl}/api/measurements/live-preview?limit=12`)
-        if (!response.ok) throw new Error('Live preview unavailable')
-        const next = await response.json() as LiveReading[]
-        acceptReadings(next)
-      } catch {
-        setHistory((current) => current)
-      }
+      // Admin preview endpoint is authenticated and returns the current live
+      // packets in production without exposing them to unauthenticated users.
+      setHistory((current) => current)
     }
   }
   useEffect(() => {
@@ -999,7 +992,7 @@ function LiveMonitoringPage({ location, geoStatus, requestLocation, role }: { lo
     connect()
     // WebSocket is preferred; poll quickly as a resilient fallback for hosted
     // environments where cross-origin WebSockets are delayed or interrupted.
-    const fallbackTimer = window.setInterval(load, 500)
+    const fallbackTimer = window.setInterval(load, 1500)
     return () => { disposed = true; window.clearInterval(fallbackTimer); if (reconnectTimer) window.clearTimeout(reconnectTimer); socket?.close() }
   }, [historyPaused])
   const now = Date.now()

@@ -40,7 +40,7 @@ def parse_message(raw: str) -> dict:
 def forward(endpoint: str, device_key: str, payload: dict) -> str:
     body = json.dumps(payload).encode()
     request = Request(endpoint, data=body, headers={"Content-Type": "application/json", "X-Device-Key": device_key}, method="POST")
-    with urlopen(request, timeout=10) as response:
+    with urlopen(request, timeout=3) as response:
         return response.read().decode()
 
 
@@ -103,10 +103,22 @@ def main() -> int:
     print(f"Input mode: auto (JSON or current OLED text firmware); forwarding at most once every {args.min_interval:g}s")
     legacy_parser = LegacyTextParser(args.device_id)
     last_forwarded_at = 0.0
+    pending_payload: dict | None = None
+    last_error_at = 0.0
     with serial.Serial(args.port, args.baud, timeout=1) as port:
         while True:
             raw = port.readline().decode("utf-8", errors="replace").strip()
             if not raw:
+                if pending_payload and time.monotonic() - last_forwarded_at >= args.min_interval:
+                    try:
+                        print(forward(args.endpoint, args.device_key, pending_payload))
+                        last_forwarded_at = time.monotonic()
+                        pending_payload = None
+                    except Exception as error:
+                        if time.monotonic() - last_error_at >= 10:
+                            print(f"network unavailable; keeping latest OLED reading and retrying: {error}", file=sys.stderr)
+                            last_error_at = time.monotonic()
+                        time.sleep(1)
                 continue
             try:
                 try:
@@ -118,9 +130,18 @@ def main() -> int:
                     parse_message(json.dumps(payload))
                 now = time.monotonic()
                 if now - last_forwarded_at < args.min_interval:
+                    pending_payload = payload
                     continue
-                print(forward(args.endpoint, args.device_key, payload))
-                last_forwarded_at = now
+                pending_payload = payload
+                try:
+                    print(forward(args.endpoint, args.device_key, pending_payload))
+                    last_forwarded_at = time.monotonic()
+                    pending_payload = None
+                except Exception as error:
+                    if time.monotonic() - last_error_at >= 10:
+                        print(f"network unavailable; keeping latest OLED reading and retrying: {error}", file=sys.stderr)
+                        last_error_at = time.monotonic()
+                    time.sleep(1)
             except Exception as error:
                 print(f"bridge rejected line: {error}", file=sys.stderr)
 
