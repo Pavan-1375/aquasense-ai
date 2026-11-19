@@ -87,6 +87,19 @@ void showReading(float distance, float waterHeight, float percentage) {
   display.display();
 }
 
+void publishReading(float distance, float waterHeight, float percentage) {
+  // Send the exact values used by the OLED in one atomic packet. The bridge and
+  // web app display these fields without recalculating them.
+  Serial.print("{\"device_id\":\""); Serial.print(DEVICE_ID);
+  Serial.print("\",\"timestamp\":\"");
+  unsigned long now = millis();
+  Serial.print(now);
+  Serial.print("\",\"distance_cm\":"); Serial.print(distance, 1);
+  Serial.print(",\"water_depth_cm\":"); Serial.print(waterHeight, 1);
+  Serial.print(",\"water_level_percent\":"); Serial.print(percentage, 1);
+  Serial.println(",\"temperature_c\":null}");
+}
+
 void setup() {
   Serial.begin(115200); pinMode(TRIG_PIN, OUTPUT); pinMode(ECHO_PIN, INPUT); digitalWrite(TRIG_PIN, LOW);
   Wire.begin(OLED_SDA, OLED_SCL);
@@ -111,9 +124,6 @@ void loop() {
   else smoothedWaterHeight = SMOOTHING_FACTOR * rawWaterHeight + (1.0f - SMOOTHING_FACTOR) * smoothedWaterHeight;
   float waterHeight = constrain(smoothedWaterHeight, 0.0f, referenceHeightCm);
   float percentage = (waterHeight / referenceHeightCm) * 100.0f;
-  // These labels are parsed by backend/bridge/serial_bridge.py.
-  Serial.print("Sensor distance: "); Serial.print(distance, 2); Serial.println(" cm");
-  Serial.print("Water level: "); Serial.print(waterHeight, 2); Serial.println(" cm");
-  Serial.print("Water percentage: "); Serial.print(percentage, 1); Serial.println(" %");
   showReading(distance, waterHeight, percentage);
+  publishReading(distance, waterHeight, percentage);
 }

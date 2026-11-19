@@ -25,7 +25,13 @@ def parse_message(raw: str) -> dict:
     missing = required - payload.keys()
     if missing:
         raise ValueError(f"missing fields: {', '.join(sorted(missing))}")
-    datetime.fromisoformat(str(payload["timestamp"]).replace("Z", "+00:00"))
+    # The ESP32 firmware uses its monotonic millis counter because it has no
+    # network clock. Stamp it at bridge receipt while preserving all sensor
+    # values exactly as emitted by the OLED packet.
+    if isinstance(payload["timestamp"], (int, float)):
+        payload["timestamp"] = datetime.now(timezone.utc).isoformat()
+    else:
+        datetime.fromisoformat(str(payload["timestamp"]).replace("Z", "+00:00"))
     if all(payload.get(key) is None for key in ("distance_cm", "water_level_percent", "water_depth_cm")):
         raise ValueError("at least one groundwater measurement is required")
     return payload
