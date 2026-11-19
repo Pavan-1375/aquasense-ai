@@ -344,6 +344,7 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
   const [location, setLocation] = useState<LiveLocation | null>(() => currentAccount.lastLocation)
   const [trackingLocation, setTrackingLocation] = useState(false)
   const [geoStatus, setGeoStatus] = useState<'idle' | 'requesting' | 'granted' | 'denied'>(location ? 'granted' : 'idle')
+  const [geoMessage, setGeoMessage] = useState('')
   const [updates, setUpdates] = useState<QualityUpdate[]>(() => readStorage<QualityUpdate[]>('quality-updates', []))
   const [apiStatus, setApiStatus] = useState<'checking' | 'online' | 'offline'>('checking')
   const [dashboard, setDashboard] = useState<DashboardSnapshot | null>(null)
@@ -377,6 +378,7 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
   useEffect(() => {
     if (!trackingLocation || !navigator.geolocation) return
     const watchId = navigator.geolocation.watchPosition((position) => {
+      setGeoMessage('')
       const nextLocation: LiveLocation = {
         latitude: position.coords.latitude,
         longitude: position.coords.longitude,
@@ -387,7 +389,7 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
       onAccountUpdate({ lastLocation: nextLocation })
       void syncLocationToBackend(nextLocation).catch(() => undefined)
       setGeoStatus('granted')
-    }, () => setGeoStatus('denied'), { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 })
+    }, (error) => { setGeoStatus('denied'); setGeoMessage(error.code === 1 ? 'Location permission is blocked. Allow location access in the browser site settings, then try again.' : error.code === 2 ? 'The device location is unavailable. Turn on Windows location services or GPS and retry.' : 'Location timed out. Retry from the map.') }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 })
     return () => navigator.geolocation.clearWatch(watchId)
   }, [trackingLocation])
 
@@ -395,11 +397,13 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
     setAccountOpen(false)
     if (!navigator.geolocation) {
       setGeoStatus('denied')
+      setGeoMessage('This browser does not provide geolocation.')
       return
     }
     setTrackingLocation(true)
     setGeoStatus('requesting')
     navigator.geolocation.getCurrentPosition((position) => {
+      setGeoMessage('')
       const nextLocation: LiveLocation = {
         latitude: position.coords.latitude,
         longitude: position.coords.longitude,
@@ -410,7 +414,7 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
       onAccountUpdate({ lastLocation: nextLocation })
       void syncLocationToBackend(nextLocation).catch(() => undefined)
       setGeoStatus('granted')
-    }, () => setGeoStatus('denied'), { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 })
+    }, (error) => { setGeoStatus('denied'); setGeoMessage(error.code === 1 ? 'Location permission is blocked. Allow location access in the browser site settings, then try again.' : error.code === 2 ? 'The device location is unavailable. Turn on Windows location services or GPS and retry.' : 'Location timed out. Retry from the map.') }, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 })
   }
 
   useEffect(() => {
@@ -420,12 +424,14 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
       // Prompt once on first use; after permission is granted, keep the site
       // synchronized automatically. A denied permission remains user-controlled.
       if (permission.state !== 'denied') requestLocation()
-    }).catch(() => undefined)
+      permission.onchange = () => { if (permission.state === 'granted') requestLocation() }
+    }).catch(() => requestLocation())
   }, [])
 
   const selectMapLocation = (nextLocation: LiveLocation) => {
     setTrackingLocation(false)
     setLocation(nextLocation)
+    setGeoMessage('Location selected manually on the map.')
     onAccountUpdate({ lastLocation: nextLocation })
     void syncLocationToBackend(nextLocation).catch(() => undefined)
     setGeoStatus('granted')
@@ -491,7 +497,7 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
             <span className={`site-dot ${geoStatus === 'granted' ? '' : 'site-dot-muted'}`} />
             <span>{location ? 'Current test site' : 'Set live location'}</span><MapPinned size={14} />
           </button>
-          <span className="site-coordinate">{formatCoordinates(location)}</span>
+          <span className="site-coordinate">{geoMessage || formatCoordinates(location)}</span>
         </div>
         <nav className="nav-list" aria-label="Main navigation">
           <span className="nav-section-label">Workspace</span>
