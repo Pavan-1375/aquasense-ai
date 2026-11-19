@@ -997,7 +997,9 @@ function LiveMonitoringPage({ location, geoStatus, requestLocation, role }: { lo
       socket.onerror = () => socket?.close()
     }
     connect()
-    const fallbackTimer = window.setInterval(load, 2000)
+    // WebSocket is preferred; poll quickly as a resilient fallback for hosted
+    // environments where cross-origin WebSockets are delayed or interrupted.
+    const fallbackTimer = window.setInterval(load, 500)
     return () => { disposed = true; window.clearInterval(fallbackTimer); if (reconnectTimer) window.clearTimeout(reconnectTimer); socket?.close() }
   }, [historyPaused])
   const now = Date.now()
