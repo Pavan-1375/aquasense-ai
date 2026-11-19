@@ -341,7 +341,7 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
   const [theme, setTheme] = useState<Theme>(() => readStorage<Theme>('theme-v3', 'dark'))
   const [themePromptOpen, setThemePromptOpen] = useState(() => !window.localStorage.getItem(storageKey('theme-v3')))
   const [accountOpen, setAccountOpen] = useState(false)
-  const [location, setLocation] = useState<LiveLocation | null>(() => currentAccount.lastLocation)
+  const [location, setLocation] = useState<LiveLocation | null>(() => currentAccount.lastLocation ?? readStorage<LiveLocation | null>('selected-map-location', null))
   const [trackingLocation, setTrackingLocation] = useState(false)
   const [geoStatus, setGeoStatus] = useState<'idle' | 'requesting' | 'granted' | 'denied'>(location ? 'granted' : 'idle')
   const [geoMessage, setGeoMessage] = useState('')
@@ -389,7 +389,17 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
       onAccountUpdate({ lastLocation: nextLocation })
       void syncLocationToBackend(nextLocation).catch(() => undefined)
       setGeoStatus('granted')
-    }, (error) => { setGeoStatus('denied'); setGeoMessage(error.code === 1 ? 'Location permission is blocked. Allow location access in the browser site settings, then try again.' : error.code === 2 ? 'The device location is unavailable. Turn on Windows location services or GPS and retry.' : 'Location timed out. Retry from the map.') }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 })
+    }, (error) => {
+      const selectedLocation = readStorage<LiveLocation | null>('selected-map-location', null)
+      if (selectedLocation) {
+        setLocation(selectedLocation)
+        setGeoStatus('granted')
+        setGeoMessage('GPS unavailable; keeping the location selected on the map.')
+      } else {
+        setGeoStatus('denied')
+        setGeoMessage(error.code === 1 ? 'Location permission is blocked. Allow location access in the browser site settings, then try again.' : error.code === 2 ? 'The device location is unavailable. Turn on Windows location services or GPS and retry.' : 'Location timed out. Retry from the map.')
+      }
+    }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 })
     return () => navigator.geolocation.clearWatch(watchId)
   }, [trackingLocation])
 
@@ -414,7 +424,17 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
       onAccountUpdate({ lastLocation: nextLocation })
       void syncLocationToBackend(nextLocation).catch(() => undefined)
       setGeoStatus('granted')
-    }, (error) => { setGeoStatus('denied'); setGeoMessage(error.code === 1 ? 'Location permission is blocked. Allow location access in the browser site settings, then try again.' : error.code === 2 ? 'The device location is unavailable. Turn on Windows location services or GPS and retry.' : 'Location timed out. Retry from the map.') }, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 })
+    }, (error) => {
+      const selectedLocation = readStorage<LiveLocation | null>('selected-map-location', null)
+      if (selectedLocation) {
+        setLocation(selectedLocation)
+        setGeoStatus('granted')
+        setGeoMessage('GPS unavailable; keeping the location selected on the map.')
+      } else {
+        setGeoStatus('denied')
+        setGeoMessage(error.code === 1 ? 'Location permission is blocked. Allow location access in the browser site settings, then try again.' : error.code === 2 ? 'The device location is unavailable. Turn on Windows location services or GPS and retry.' : 'Location timed out. Retry from the map.')
+      }
+    }, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 })
   }
 
   useEffect(() => {
@@ -431,6 +451,7 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
   const selectMapLocation = (nextLocation: LiveLocation) => {
     setTrackingLocation(false)
     setLocation(nextLocation)
+    writeStorage('selected-map-location', nextLocation)
     setGeoMessage('Location selected manually on the map.')
     onAccountUpdate({ lastLocation: nextLocation })
     void syncLocationToBackend(nextLocation).catch(() => undefined)
