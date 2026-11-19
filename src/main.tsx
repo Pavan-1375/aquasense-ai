@@ -912,10 +912,14 @@ function SubmitMonitoringPage({ account, location, requestLocation, onSubmitted 
   useEffect(() => {
     const loadStations = async () => {
       try {
+        let syncedStation: StationOption | null = null
+        if (location) {
+          const synced = await syncLocationToBackend(location) as { station_id: string }
+          syncedStation = { id: synced.station_id, name: `Current test site · ${formatCoordinates(location)}` }
+        }
         let items = await apiFetch<StationOption[]>('/api/stations')
         if (!items.length && location) {
-          const synced = await syncLocationToBackend(location) as { station_id: string }
-          items = [{ id: synced.station_id, name: `Current test site · ${formatCoordinates(location)}` }]
+          items = syncedStation ? [syncedStation] : []
         }
         setStations(items)
         if (items[0]) setStationId(items[0].id)
