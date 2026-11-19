@@ -1,0 +1,128 @@
+{
+  "$schema": "https://aka.ms/codetour-schema",
+  "title": "AquaSense AI feature and data-flow blueprint",
+  "description": "Architecture walkthrough for the complete AquaSense workspace: page responsibilities, backend ownership, live-device flow, approval boundaries, analytics, and reporting.",
+  "ref": "main",
+  "steps": [
+    {
+      "file": "README.md",
+      "pattern": "## Final project objectives",
+      "title": "Project contract",
+      "description": "Situation: the README defines the four project objectives and the four-parameter quality boundary. Mechanism: every feature should be judged against these objectives. Implication: the app is a monitoring and screening platform, not a potability certification. Gotcha: the quality model is formula-labelled and the groundwater fallback is explicitly transparent."
+    },
+    {
+      "file": "src/main.tsx",
+      "pattern": "const navItems",
+      "title": "Page inventory",
+      "description": "Situation: this list is the user-visible workspace navigation. Mechanism: each item maps to a page branch in App. Implication: this is the authoritative feature menu for the frontend. Gotcha: Settings is rendered separately from navItems and Administration is role-filtered."
+    },
+    {
+      "file": "src/main.tsx",
+      "line": 519,
+      "title": "Page routing and composition",
+      "description": "Situation: App selects the page component from local navigation state. Mechanism: shared account, location, role, quality values, and dashboard state are passed into pages. Implication: page-to-page data sharing is mostly prop/state based, while durable data comes from apiFetch. Gotcha: changing a page does not itself change backend state."
+    },
+    {
+      "file": "src/main.tsx",
+      "pattern": "function OverviewPage",
+      "title": "Home dashboard",
+      "description": "Situation: Overview is the entry point for system status, site context, pending updates, quality, and groundwater signals. Mechanism: it consumes the dashboard snapshot and local quality/location state, with links into detailed pages. Implication: it is the operational summary. Gotcha: official groundwater cards use approved backend readings, while live pending packets belong in Live Monitoring."
+    },
+    {
+      "file": "src/main.tsx",
+      "pattern": "function LiveMonitoringPage",
+      "title": "Live device path",
+      "description": "Situation: Live Monitoring is the ESP32 operator surface. Mechanism: WebSocket events and a polling fallback update one row per device, retain a local packet history, and show pending-review status. Implication: this is where incoming values first become visible. Gotcha: visibility is not approval; raw packets remain excluded from official analytics until review."
+    },
+    {
+      "file": "backend/app/api/routes.py",
+      "line": 894,
+      "title": "Device ingestion boundary",
+      "description": "Situation: ESP32 or the serial bridge enters through /api/ingest/http. Mechanism: the device key is checked, the packet is validated, persisted, and broadcast to WebSocket clients. Implication: this endpoint is the live-data source for the frontend. Gotcha: new readings are pending_review and ownerless packets are intentionally restricted to admins."
+    },
+    {
+      "file": "backend/app/services/ingestion.py",
+      "pattern": "def save_measurement_with_key",
+      "title": "Measurement persistence and controls",
+      "description": "Situation: every accepted device packet is normalized here. Mechanism: duplicate, stale, missing-value, station, timestamp, device-status, alert, and idempotency behavior are applied before commit. Implication: this is the durable source for history, study mode, and review. Gotcha: the database stores the original timestamp and does not invent a value."
+    },
+    {
+      "file": "src/main.tsx",
+      "pattern": "function QualityPage",
+      "title": "Water-quality screening",
+      "description": "Situation: Quality is the manual/live four-parameter screening surface. Mechanism: pH, TDS, turbidity, and temperature feed the configured browser result and can be submitted with location and evidence. Implication: it supports the quality objective and review workflow. Gotcha: the result is sensor screening and does not cover microbiology, nitrate, fluoride, hardness, or heavy metals."
+    },
+    {
+      "file": "ml/quality_inference.py",
+      "pattern": "ACTIVE_FEATURE_ORDER",
+      "title": "ML inference contract",
+      "description": "Situation: the model contract defines the exact four inputs and order. Mechanism: feature names, numeric values, finite values, and sensor ranges are validated before inference. Implication: UI, backend, and artifact must agree here. Gotcha: a valid prediction can still be scientifically limited because training labels came from the project formula."
+    },
+    {
+      "file": "src/main.tsx",
+      "pattern": "function LiveGroundwaterIntelligence",
+      "title": "Groundwater intelligence bridge",
+      "description": "Situation: this panel connects the persisted live study to the Groundwater Intelligence page. Mechanism: it loads pending HTTP packets, applies saved virtual-day assignments, computes daily means, trend direction, proxy risk, and a transparent projection. Implication: reopening the page refreshes from stored data. Gotcha: bottle proxy results are visibly separated from approved borewell analytics."
+    },
+    {
+      "file": "backend/app/services/forecast.py",
+      "pattern": "def fallback_forecast",
+      "title": "Forecast method and limit",
+      "description": "Situation: the backend forecast service handles approved groundwater level series when no compatible trained forecasting artifact is configured. Mechanism: it uses a labelled recent trend baseline with bounded projection and risk bands. Implication: forecast output is explainable and available locally. Gotcha: it is not an LSTM, TFT, or validated seasonal model."
+    },
+    {
+      "file": "src/main.tsx",
+      "pattern": "function MapLocationsPage",
+      "title": "Map and site context",
+      "description": "Situation: Map & Locations connects browser location, search, reverse geocoding, layers, and station context. Mechanism: selected coordinates flow into location sync and submission metadata. Implication: a reading can be tied to where the test occurred. Gotcha: geolocation and external map/search providers still require browser/network permissions."
+    },
+    {
+      "file": "src/main.tsx",
+      "pattern": "function SubmitMonitoringPage",
+      "title": "Submission and evidence workflow",
+      "description": "Situation: users submit quality or groundwater observations for review. Mechanism: the form sends values, timestamp, station, location, remarks, and optional proof attachment; the admin review route promotes or rejects it. Implication: this is the accountability gate. Gotcha: submitted data does not become official analytics until approval."
+    },
+    {
+      "file": "backend/app/api/routes.py",
+      "line": 598,
+      "title": "Submission API and review chain",
+      "description": "Situation: submission routes persist versioned user data and expose mine/admin views. Mechanism: ownership filters protect user records, attachment handling stores evidence, and admin review records the decision. Implication: review is enforced server-side rather than being only a UI state. Gotcha: a normal user cannot promote their own submission."
+    },
+    {
+      "file": "src/main.tsx",
+      "pattern": "function HistoryAnalyticsPage",
+      "title": "History and analysis",
+      "description": "Situation: History is the user-facing inspection/export view for stored values. Mechanism: it applies local filters and exports contextual rows, while backend history/report routes supply durable records. Implication: this is where a reviewer compares observations over time. Gotcha: official history must remain approval-scoped; live pending data is a separate operational stream."
+    },
+    {
+      "file": "src/main.tsx",
+      "pattern": "function ReportsPage",
+      "title": "Reports and exports",
+      "description": "Situation: Reports provides protected CSV and PDF actions. Mechanism: buttons call backend exports generated from approved stored observations and documented limitations. Implication: reports are downstream outputs, not a second data store. Gotcha: a report can be empty until records are approved."
+    },
+    {
+      "file": "src/main.tsx",
+      "pattern": "function AdminPage",
+      "title": "Administration and promotion",
+      "description": "Situation: Admin is the control plane for users, review queues, devices, alerts, and system state. Mechanism: frontend actions call admin-only routes protected by require_admin. Implication: approval, role management, and device oversight converge here. Gotcha: hiding the page is not the security boundary; backend authorization is."
+    },
+    {
+      "file": "backend/app/main.py",
+      "pattern": "async def request_context",
+      "title": "Cross-cutting request controls",
+      "description": "Situation: every API request passes through shared middleware. Mechanism: rate limits, CSRF checks, request IDs, security headers, logging, and production docs behavior are applied before routes. Implication: this is the trust boundary for sessions and mutations. Gotcha: production cookie, CORS, HTTPS, and provider configuration still need live deployment verification."
+    },
+    {
+      "file": "backend/app/models.py",
+      "pattern": "class Measurement",
+      "title": "Durable data model",
+      "description": "Situation: Measurement is the core record linking device, station, timestamp, values, location, source, and quality status. Mechanism: submissions, alerts, reports, and dashboards reference this model or related records. Implication: storage design explains why one packet can appear in live monitoring before it appears in official analytics. Gotcha: pending, reviewed, stale, and duplicate states have different downstream meanings."
+    },
+    {
+      "file": "backend/tests/test_api_integration.py",
+      "pattern": "class ApiIntegrationTests",
+      "title": "Verified behavior",
+      "description": "Situation: integration tests exercise auth cookies, ownership, admin boundaries, live queues, account erasure, and pending/approved visibility. Mechanism: route functions run against a test database. Implication: core trust and data-flow rules are regression protected. Gotcha: these tests do not replace a deployed browser walkthrough, physical ESP32 test, email delivery test, or PostgreSQL backup/restore drill."
+    }
+  ]
+}
