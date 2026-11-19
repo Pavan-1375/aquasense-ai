@@ -474,6 +474,7 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
     setPage(next)
     setMobileNav(false)
   }
+  useEffect(() => { const onNavigate = (event: Event) => navigate((event as CustomEvent<Page>).detail); window.addEventListener('aquasense:navigate', onNavigate); return () => window.removeEventListener('aquasense:navigate', onNavigate) })
 
   return (
     <div className="app-shell">
@@ -567,7 +568,9 @@ function LiveGroundwaterIntelligence() {
 }
 
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: ReactNode }) {
-  return <><div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action}</div>{eyebrow === 'Iot · live monitoring' && <><BottleStudyPanel /><StudyIntelligencePanel /></>}{eyebrow === 'Groundwater · level' && <LiveGroundwaterIntelligence />}</>
+  const links: Array<[string, Page]> = eyebrow === 'Iot · live monitoring' ? [['Submit proof', 'submit'], ['Review queue', 'admin'], ['Reports', 'reports']] : eyebrow === 'Groundwater · level' ? [['Live monitoring', 'live'], ['History', 'history'], ['Reports', 'reports']] : eyebrow === 'Documents · reports' ? [['Groundwater intelligence', 'level'], ['History', 'history']] : eyebrow === 'Water quality · screening' ? [['Submit reading', 'submit'], ['Live monitoring', 'live']] : eyebrow === 'Operations · alerts' ? [['Administration', 'admin']] : []
+  const jump = (page: Page) => window.dispatchEvent(new CustomEvent('aquasense:navigate', { detail: page }))
+  return <><div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div><div className="page-header-actions">{links.map(([label, page]) => <button className="button ghost small" key={page} onClick={() => jump(page)}>{label} <ArrowUpRight size={13}/></button>)}{action}</div></div>{eyebrow === 'Iot · live monitoring' && <><BottleStudyPanel /><StudyIntelligencePanel /></>}{eyebrow === 'Groundwater · level' && <LiveGroundwaterIntelligence />}</>
 }
 
 function OverviewPage({ navigate, prediction, dashboard, values, location, geoStatus, requestLocation, onSelectLocation, role, updates, onReviewUpdate, accounts }: { navigate: (page: Page) => void; prediction: { label: string; confidence: number | null }; dashboard: DashboardSnapshot | null; values: Record<string, number>; location: LiveLocation | null; geoStatus: 'idle' | 'requesting' | 'granted' | 'denied'; requestLocation: () => void; onSelectLocation: (location: LiveLocation) => void; role: Role; updates: QualityUpdate[]; onReviewUpdate: (id: string) => void; accounts: Account[] }) {
