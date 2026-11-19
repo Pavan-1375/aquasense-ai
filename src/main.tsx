@@ -414,7 +414,8 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
   }
 
   useEffect(() => {
-    if (!navigator.geolocation || !navigator.permissions) return
+    if (!navigator.geolocation) return
+    if (!navigator.permissions) { requestLocation(); return }
     void navigator.permissions.query({ name: 'geolocation' }).then((permission) => {
       // Prompt once on first use; after permission is granted, keep the site
       // synchronized automatically. A denied permission remains user-controlled.
@@ -520,7 +521,7 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
           {page === 'overview' && <OverviewPage navigate={navigate} prediction={prediction} dashboard={dashboard} values={values} location={location} geoStatus={geoStatus} requestLocation={requestLocation} onSelectLocation={selectMapLocation} role={currentAccount.role} updates={updates} onReviewUpdate={reviewUpdate} accounts={accounts} />}
           {page === 'live' && <LiveMonitoringPage location={location} geoStatus={geoStatus} requestLocation={requestLocation} role={currentAccount.role} />}
           {page === 'quality' && <QualityPage values={values} setValues={setValues} prediction={prediction} isLive={isLive} setIsLive={setIsLive} location={location} role={currentAccount.role} onSubmit={submitQualityUpdate} />}
-          {page === 'submit' && <SubmitMonitoringPage account={currentAccount} location={location} onSubmitted={() => setLastUpdated('submission saved')} />}
+          {page === 'submit' && <SubmitMonitoringPage account={currentAccount} location={location} requestLocation={requestLocation} onSubmitted={() => setLastUpdated('submission saved')} />}
           {page === 'submissions' && <MySubmissionsPage />}
           {page === 'level' && <LevelPage />}
           {page === 'advisor' && <AdvisorPage values={values} prediction={prediction} />}
@@ -609,10 +610,26 @@ function LiveMap({ location, geoStatus, onRequest, onSelectLocation, accounts }:
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<LocationSearchResult[]>([])
   const [searchStatus, setSearchStatus] = useState<'idle' | 'loading' | 'error'>('idle')
+  const [readingLocations, setReadingLocations] = useState<Array<{ id: string; timestamp: string; distance_cm?: number | null; water_level_percent?: number | null; site_latitude?: number | null; site_longitude?: number | null; quality_status: string }>>([])
   const [placeContext, setPlaceContext] = useState<LocationContext | null>(() => location?.place ?? null)
   const [placeStatus, setPlaceStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>(location?.place ? 'ready' : 'idle')
   const geocodeRequestRef = useRef(0)
   const suppressAutocompleteRef = useRef(false)
+
+  useEffect(() => {
+    const loadReadingLocations = async () => {
+      try {
+        const [pending, reviewed] = await Promise.all([
+          apiFetch<typeof readingLocations>('/api/measurements?status=pending_review&limit=2000'),
+          apiFetch<typeof readingLocations>('/api/measurements?status=reviewed&limit=2000'),
+        ])
+        setReadingLocations(Array.from(new Map([...pending, ...reviewed].map((reading) => [reading.id, reading])).values()))
+      } catch { setReadingLocations([]) }
+    }
+    void loadReadingLocations()
+    const timer = window.setInterval(loadReadingLocations, 15000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const tileConfig = {
     street: { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', attribution: '&copy; OpenStreetMap contributors' },
@@ -779,7 +796,11 @@ function LiveMap({ location, geoStatus, onRequest, onSelectLocation, accounts }:
       L.circleMarker([accountLocation.latitude, accountLocation.longitude], { radius: account.role === 'admin' ? 7 : 6, color: '#222222', weight: 2, fillColor: account.role === 'admin' ? '#ffffff' : '#888888', fillOpacity: .9 }).bindPopup(`<b>${account.name}</b><br/>${account.role === 'admin' ? 'Admin' : 'User'} · active account`).addTo(markers)
     })
     if (areaBounds) L.rectangle(areaBounds, { color: '#444444', weight: 2, fillColor: '#999999', fillOpacity: .12 }).addTo(markers)
-  }, [location, accounts, areaBounds])
+    readingLocations.filter((reading) => reading.site_latitude != null && reading.site_longitude != null).forEach((reading) => {
+      const level = reading.water_level_percent != null ? `${reading.water_level_percent.toFixed(1)}%` : reading.distance_cm != null ? `${reading.distance_cm.toFixed(1)} cm` : '—'
+      L.circleMarker([reading.site_latitude as number, reading.site_longitude as number], { radius: 5, color: reading.quality_status === 'reviewed' ? '#111111' : '#777777', weight: 2, fillColor: '#ffffff', fillOpacity: .85 }).bindPopup(`<b>Previous reading</b><br/>${new Date(reading.timestamp).toLocaleString()}<br/>${level}<br/>${reading.quality_status}`).addTo(markers)
+    })
+  }, [location, accounts, areaBounds, readingLocations])
 
   const nearbyUsers = accounts.filter((account) => account.lastLocation).length
   const placeTitle = placeContext ? [placeContext.city, placeContext.district, placeContext.state].filter(Boolean).slice(0, 2).join(', ') || placeContext.country || 'Selected site' : placeStatus === 'loading' ? 'Resolving area name…' : location ? 'Selected map site' : 'No site selected'
@@ -874,7 +895,7 @@ type StationOption = { id: string; name: string; state?: string | null; district
 type SubmissionRecord = { id: string; station_id: string; device_id?: string | null; measurement_at: string; submitted_at?: string | null; status: string; source: string; measurement_method: string; remarks?: string | null; groundwater?: Record<string, unknown> | null; quality?: Record<string, unknown> | null; validation_warnings: { severity: string; detail: string }[]; review_feedback?: string | null; version: number }
 type DeviceReviewRecord = { id: string; device_id: string; timestamp: string; distance_cm?: number | null; water_level_percent?: number | null; water_depth_cm?: number | null; quality_status: string; station_id?: string | null; site_latitude?: number | null; site_longitude?: number | null }
 
-function SubmitMonitoringPage({ account, location, onSubmitted }: { account: Account; location: LiveLocation | null; onSubmitted: () => void }) {
+function SubmitMonitoringPage({ account, location, requestLocation, onSubmitted }: { account: Account; location: LiveLocation | null; requestLocation: () => void; onSubmitted: () => void }) {
   const [stations, setStations] = useState<StationOption[]>([])
   const [stationId, setStationId] = useState('')
   const [category, setCategory] = useState<'quality' | 'groundwater'>('quality')
@@ -889,11 +910,21 @@ function SubmitMonitoringPage({ account, location, onSubmitted }: { account: Acc
   const [error, setError] = useState('')
 
   useEffect(() => {
-    apiFetch<StationOption[]>('/api/stations').then((items) => { setStations(items); if (items[0]) setStationId(items[0].id) }).catch(() => {
-      const localStation = { id: 'local-current-site', name: location ? `Current site · ${formatCoordinates(location)}` : 'Current test site' }
-      setStations([localStation])
-      setStationId(localStation.id)
-    })
+    const loadStations = async () => {
+      try {
+        let items = await apiFetch<StationOption[]>('/api/stations')
+        if (!items.length && location) {
+          const synced = await syncLocationToBackend(location) as { station_id: string }
+          items = [{ id: synced.station_id, name: `Current test site · ${formatCoordinates(location)}` }]
+        }
+        setStations(items)
+        if (items[0]) setStationId(items[0].id)
+      } catch {
+        setStations([])
+        setStationId('')
+      }
+    }
+    void loadStations()
   }, [location])
 
   const numberOrUndefined = (value: string) => value.trim() === '' ? undefined : Number(value)
@@ -925,7 +956,7 @@ function SubmitMonitoringPage({ account, location, onSubmitted }: { account: Acc
   const updateField = (setter: React.Dispatch<React.SetStateAction<Record<string, string>>>, key: string, value: string) => setter((previous) => ({ ...previous, [key]: value }))
   return <><PageHeader eyebrow="Data submission · weekly" title="Submit monitoring data" description={`Create an auditable water observation for ${account.name}. Unreviewed records never enter approved analytics.`} action={<span className="quality-badge good"><CheckCircle2 size={14} /> Central record</span>} />
     <section className="submission-workflow"><div className="submission-step active"><span>1</span><div><strong>Enter</strong><small>Validated values</small></div></div><div className="submission-step"><span>2</span><div><strong>Review</strong><small>Administrator queue</small></div></div><div className="submission-step"><span>3</span><div><strong>Approve</strong><small>Analytics eligible</small></div></div></section>
-    <section className="panel submission-panel"><div className="panel-heading"><div><div className="eyebrow">Observation context</div><h2>Where and when was this measured?</h2></div><span className="model-label">Original values preserved</span></div><div className="form-grid three"><label>Monitoring station<select value={stationId} onChange={(event) => setStationId(event.target.value)}><option value="">Select station</option>{stations.map((station) => <option value={station.id} key={station.id}>{station.name}{station.state ? ` · ${station.state}` : ''}</option>)}</select></label><label>Measurement timestamp<input type="datetime-local" value={measurementAt} onChange={(event) => setMeasurementAt(event.target.value)} /></label><label>Measurement method<select value={method} onChange={(event) => setMethod(event.target.value)}><option value="manual">Manual sensor entry</option><option value="device">Registered device</option><option value="laboratory">Laboratory result</option><option value="imported">Imported historical data</option></select></label></div><div className="submission-location-note"><MapPinned size={15} /><span>{location ? `Current site context linked at ${formatCoordinates(location)}. Select the matching registered station above.` : 'No browser location is linked. Choose a registered monitoring station.'}</span></div></section>
+    <section className="panel submission-panel"><div className="panel-heading"><div><div className="eyebrow">Observation context</div><h2>Where and when was this measured?</h2></div><span className="model-label">Original values preserved</span></div><div className="form-grid three"><label>Monitoring station<select value={stationId} onChange={(event) => setStationId(event.target.value)}><option value="">{stations.length ? 'Select station' : 'No station yet'}</option>{stations.map((station) => <option value={station.id} key={station.id}>{station.name}{station.state ? ` · ${station.state}` : ''}</option>)}</select></label><label>Measurement timestamp<input type="datetime-local" value={measurementAt} onChange={(event) => setMeasurementAt(event.target.value)} /></label><label>Measurement method<select value={method} onChange={(event) => setMethod(event.target.value)}><option value="manual">Manual sensor entry</option><option value="device">Registered device</option><option value="laboratory">Laboratory result</option><option value="imported">Imported historical data</option></select></label></div><div className="submission-location-note"><MapPinned size={15} /><span>{location ? `Current site context linked at ${formatCoordinates(location)}. Station coordinates are saved with this submission.` : 'Enable live GPS to create or select the monitoring station.'}</span>{!location && <button className="text-button" onClick={requestLocation}><LocateFixed size={14}/> Use live GPS</button>}</div></section>
     <section className="panel submission-panel"><div className="panel-heading"><div><div className="eyebrow">Measurement category</div><h2>Choose what you are submitting</h2></div><div className="segmented-control"><button className={category === 'quality' ? 'selected' : ''} onClick={() => setCategory('quality')}><Droplets size={14} />Water quality</button><button className={category === 'groundwater' ? 'selected' : ''} onClick={() => setCategory('groundwater')}><Gauge size={14} />Groundwater</button></div></div>{category === 'quality' ? <div className="form-grid three submission-fields"><Field label="pH" unit="pH" value={quality.ph} onChange={(value) => updateField(setQuality, 'ph', value)} min="0" max="14" step="0.01" /><Field label="Total Dissolved Solids (TDS)" unit="mg/L" value={quality.tds_mg_l} onChange={(value) => updateField(setQuality, 'tds_mg_l', value)} min="0" step="1" /><Field label="Electrical Conductivity (EC)" unit="µS/cm" value={quality.ec_us_cm} onChange={(value) => updateField(setQuality, 'ec_us_cm', value)} min="0" step="1" /><Field label="Turbidity" unit="NTU" value={quality.turbidity_ntu} onChange={(value) => updateField(setQuality, 'turbidity_ntu', value)} min="0" step="0.1" optional /><Field label="Temperature" unit="°C" value={quality.temperature_c} onChange={(value) => updateField(setQuality, 'temperature_c', value)} min="-50" max="100" step="0.1" optional /><Field label="Total hardness" unit="mg/L as CaCO₃" value={quality.hardness_mg_l} onChange={(value) => updateField(setQuality, 'hardness_mg_l', value)} min="0" step="1" optional /><Field label="Chloride" unit="mg/L" value={quality.chloride_mg_l} onChange={(value) => updateField(setQuality, 'chloride_mg_l', value)} min="0" step="1" optional /></div> : <div className="form-grid three submission-fields"><Field label="Groundwater level" unit="m" value={groundwater.groundwater_level_m} onChange={(value) => updateField(setGroundwater, 'groundwater_level_m', value)} min="-1000" step="0.01" optional /><Field label="Distance sensor reading" unit="cm" value={groundwater.distance_cm} onChange={(value) => updateField(setGroundwater, 'distance_cm', value)} min="0" step="0.1" optional /><Field label="Water depth" unit="cm" value={groundwater.water_depth_cm} onChange={(value) => updateField(setGroundwater, 'water_depth_cm', value)} min="0" step="0.1" optional /><Field label="Water level" unit="%" value={groundwater.water_level_percent} onChange={(value) => updateField(setGroundwater, 'water_level_percent', value)} min="0" max="100" step="0.1" optional /><Field label="Rainfall observation" unit="mm" value={groundwater.rainfall_mm} onChange={(value) => updateField(setGroundwater, 'rainfall_mm', value)} min="0" step="0.1" optional /></div>}
       <div className="form-grid two submission-bottom"><label>Remarks<textarea value={remarks} onChange={(event) => setRemarks(event.target.value)} placeholder="Context, instrument notes, weather, or observed anomalies" maxLength={2000} /></label><label>Proof photo or supporting report<input type="file" accept=".jpg,.jpeg,.png,.webp,.csv,.pdf,.txt,.xls,.xlsx,image/jpeg,image/png,image/webp" onChange={(event) => setAttachment(event.target.files?.[0] ?? null)} /><small className="field-help">Optional proof photo of the OLED/meter or report. Maximum 10 MB. Stored with the submission audit trail.</small></label></div>
       {error && <div className="form-message error"><AlertTriangle size={15} />{error}</div>}{message && <div className="form-message success"><CheckCircle2 size={15} />{message}</div>}
