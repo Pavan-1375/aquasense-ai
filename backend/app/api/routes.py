@@ -257,8 +257,9 @@ def signup(payload: UserCreate, response: Response, db: Session = Depends(get_db
     db.refresh(user)
     token = issue_token(db, user)
     csrf = secrets.token_urlsafe(32)
-    response.set_cookie("aquasense_session", token, httponly=True, secure=settings.app_env.lower() == "production", samesite="lax", max_age=604800, path="/")
-    response.set_cookie("aquasense_csrf", csrf, httponly=False, secure=settings.app_env.lower() == "production", samesite="lax", max_age=604800, path="/")
+    cross_site = settings.app_env.lower() == "production"
+    response.set_cookie("aquasense_session", token, httponly=True, secure=cross_site, samesite="none" if cross_site else "lax", max_age=604800, path="/")
+    response.set_cookie("aquasense_csrf", csrf, httponly=False, secure=cross_site, samesite="none" if cross_site else "lax", max_age=604800, path="/")
     return AuthResponse(user=as_user(user, contact))
 
 
@@ -269,8 +270,9 @@ def signin(payload: SignIn, response: Response, db: Session = Depends(get_db)) -
         raise HTTPException(status_code=401, detail="Email or password is incorrect")
     token = issue_token(db, user)
     csrf = secrets.token_urlsafe(32)
-    response.set_cookie("aquasense_session", token, httponly=True, secure=settings.app_env.lower() == "production", samesite="lax", max_age=604800, path="/")
-    response.set_cookie("aquasense_csrf", csrf, httponly=False, secure=settings.app_env.lower() == "production", samesite="lax", max_age=604800, path="/")
+    cross_site = settings.app_env.lower() == "production"
+    response.set_cookie("aquasense_session", token, httponly=True, secure=cross_site, samesite="none" if cross_site else "lax", max_age=604800, path="/")
+    response.set_cookie("aquasense_csrf", csrf, httponly=False, secure=cross_site, samesite="none" if cross_site else "lax", max_age=604800, path="/")
     return AuthResponse(user=as_user(user, db.query(UserContact).filter(UserContact.user_id == user.id).first()))
 
 
