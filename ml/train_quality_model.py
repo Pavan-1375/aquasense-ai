@@ -8,6 +8,7 @@ from typing import Any
 import joblib
 import numpy as np
 import pandas as pd
+import sklearn
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
@@ -171,6 +172,7 @@ def train(paths: list[Path], output_dir: Path) -> dict[str, Any]:
         "formula": artifact["formula"],
         "limits": LIMITS,
         "source_files": [str(path) for path in paths],
+        "training_environment": {"scikit_learn": sklearn.__version__, "pandas": pd.__version__},
         "complete_rows": int(len(frame)),
         "label_distribution": {str(key): int(value) for key, value in frame["label"].value_counts().to_dict().items()},
         "wqi_range": [round(float(frame["wqi"].min()), 4), round(float(frame["wqi"].max()), 4)],
