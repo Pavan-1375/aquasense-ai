@@ -203,18 +203,16 @@ function writeStorage(key: string, value: unknown) {
   }
 }
 
-function persistedAccounts(accounts: Account[]) { return accounts }
-
 async function backendAuth(endpoint: 'signup' | 'signin', payload: Record<string, string>) {
   const headers = new Headers({ 'Content-Type': 'application/json' })
   const csrf = document.cookie.split('; ').find((item) => item.startsWith('aquasense_csrf='))?.split('=')[1]
   if (csrf) headers.set('X-CSRF-Token', decodeURIComponent(csrf))
   const response = await fetch(`${backendUrl}/api/auth/${endpoint}`, { method: 'POST', headers, body: JSON.stringify(payload), credentials: 'include' })
-  const data = await response.json().catch(() => ({})) as { token?: string; user?: { id: string; name: string; email: string; role: Role; mobile_number?: string; email_verified?: boolean; mobile_verified?: boolean; reminder_consent?: boolean; preferred_reminder_channel?: 'email' | 'sms' | 'both'; timezone?: string }; detail?: string }
+  const data = await response.json().catch(() => ({})) as { user?: { id: string; name: string; email: string; role: Role; mobile_number?: string; email_verified?: boolean; mobile_verified?: boolean; reminder_consent?: boolean; preferred_reminder_channel?: 'email' | 'sms' | 'both'; timezone?: string }; detail?: string }
   if (!response.ok) throw new Error(formatApiDetail(data.detail, `Backend ${endpoint} failed`))
   const user = data.user
   if (!user) throw new Error('Backend returned an incomplete authentication response')
-  return { token: data.token, user }
+  return { user }
 }
 
 async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -366,13 +364,13 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
   }, [])
 
   useEffect(() => {
-    if (apiStatus !== 'online' || !readStorage<string | null>('api-token', null)) {
+    if (apiStatus !== 'online') {
       setDashboard(null)
       return
     }
     const loadDashboard = () => apiFetch<DashboardSnapshot>('/api/dashboard').then(setDashboard).catch(() => setDashboard(null))
     loadDashboard()
-    const interval = window.setInterval(loadDashboard, 30000)
+    const interval = window.setInterval(loadDashboard, 5000)
     return () => window.clearInterval(interval)
   }, [apiStatus])
 
@@ -537,7 +535,7 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
           {page === 'privacy' && <PolicyPage kind="privacy" />}
           {page === 'terms' && <PolicyPage kind="terms" />}
           {page === 'profile' && <ProfilePage account={currentAccount} onAccountUpdate={onAccountUpdate} />}
-          {page === 'admin' && (currentAccount.role === 'admin' ? <AdminPage accounts={accounts} /> : <AccessDeniedPage />)}
+          {page === 'admin' && (currentAccount.role === 'admin' ? <AdminPage accounts={accounts} currentAccountId={currentAccount.id} /> : <AccessDeniedPage />)}
         </div>
       </main>
       {themePromptOpen && <ThemePreferenceModal onChoose={(nextTheme) => { setTheme(nextTheme); setThemePromptOpen(false) }} />}
@@ -827,7 +825,7 @@ function Suitability({ label, state, tone }: { label: string; state: string; ton
 
 function LevelPage() {
   const [dashboard, setDashboard] = useState<DashboardSnapshot | null>(null)
-  useEffect(() => { apiFetch<DashboardSnapshot>('/api/dashboard').then(setDashboard).catch(() => setDashboard(null)) }, [])
+  useEffect(() => { const load = () => apiFetch<DashboardSnapshot>('/api/dashboard').then(setDashboard).catch(() => setDashboard(null)); load(); const timer = window.setInterval(load, 5000); return () => window.clearInterval(timer) }, [])
   const level = dashboard?.latest_measurement?.water_level_percent
   const forecast = dashboard?.forecast?.predicted_level_percent
   const risk = dashboard?.forecast?.risk
@@ -836,11 +834,11 @@ function LevelPage() {
 
 function AlertsPage() {
   const [alerts, setAlerts] = useState<Array<{ id: string; title: string; detail: string; severity: string; state: string; created_at: string }>>([])
-  const load = () => apiFetch<typeof alerts>('/api/alerts').then(setAlerts).catch(() => fetch(`${backendUrl}/api/alerts/live-preview`).then((response) => response.ok ? response.json() as Promise<typeof alerts> : Promise.reject()).then(setAlerts).catch(() => setAlerts([])))
+  const load = () => apiFetch<typeof alerts>('/api/alerts').then(setAlerts).catch(() => setAlerts([]))
   useEffect(() => { load() }, [])
   return <><div className="demo-banner"><Bell size={15} /><span><strong>{alerts.length ? 'Live admin notifications' : 'No active notifications'}</strong> Device review, promotion, and data-quality events are stored in the backend alert center.</span></div><PageHeader eyebrow="Operations · alerts" title="Alerts" description="Review active conditions across your monitoring network." action={<button className="button ghost" onClick={load}><RefreshCw size={14} /> Refresh alerts</button>} /><section className="panel alerts-table"><div className="table-row table-head"><span>Alert</span><span>Detail</span><span>Triggered</span><span>Severity</span><span>State</span><span /></div>{alerts.length === 0 ? <div className="empty-module"><CheckCircle2 size={24} className="cyan-icon" /><h2>Alert center is clear</h2><p>New device readings waiting for review will notify the administrator here.</p></div> : alerts.map((alert) => <div className="table-row" key={alert.id}><span className="alert-title"><span className={`alert-icon ${alert.severity === 'critical' ? 'red' : alert.severity === 'warning' ? 'amber' : 'green'}`}><Bell size={13} /></span><strong>{alert.title}</strong></span><span>{alert.detail}</span><span className="muted-cell">{new Date(alert.created_at).toLocaleString()}</span><span><span className={`severity ${alert.severity}`}>{alert.severity}</span></span><span><span className={`state ${alert.state}`}>{alert.state}</span></span><span /></div>)}</section></>
 }
-function ReportsPage() { const [message, setMessage] = useState(''); const download = async (path: string, filename: string) => { try { const response = await fetch(`${backendUrl}${path}`, { credentials: 'include' }); if (!response.ok) throw new Error(`Export failed (${response.status})`); const blob = await response.blob(); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = filename; anchor.click(); URL.revokeObjectURL(url); setMessage(`${filename} downloaded.`) } catch (error) { setMessage(error instanceof Error ? error.message : 'Export failed. Sign in and try again.') } }; return <><div className="demo-banner"><CircleHelp size={15} /><span><strong>Report workspace</strong> Exports use approved stored observations and include the current data limitations.</span></div><PageHeader eyebrow="Documents · reports" title="Reports and exports" description="Download the selected approved measurements as CSV or PDF." action={<button className="button primary" onClick={() => download('/api/reports/summary.pdf', 'aquasense-summary.pdf')}><FileText size={15} /> Generate PDF</button>} /><div className="report-summary"><MetricCard label="PDF report" value="Ready" detail="Approved data and limitations" icon={<FileText size={17} />} /><MetricCard label="CSV export" value="Ready" detail="Measurement rows" icon={<Cloud size={17} />} /><MetricCard label="Access" value="Protected" detail="Requires signed-in account" icon={<Check size={17} />} /></div><section className="panel reports-table"><div className="panel-heading"><div><div className="eyebrow">Machine-readable export</div><h2>Approved measurement data</h2></div><button className="text-button" onClick={() => download('/api/reports/measurements.csv', 'aquasense-measurements.csv')}>Export CSV <ArrowUpRight size={14} /></button></div><div className="empty-module"><FileText size={22} className="cyan-icon" /><p>Exports are generated from backend data, not hardcoded preview rows.</p></div>{message && <div className="form-message success"><CheckCircle2 size={15} />{message}</div>}</section></> }
+function ReportsPage() { const [message, setMessage] = useState(''); const download = async (path: string, filename: string) => { try { const headers = new Headers(); const csrf = document.cookie.split('; ').find((item) => item.startsWith('aquasense_csrf='))?.split('=')[1]; if (csrf) headers.set('X-CSRF-Token', decodeURIComponent(csrf)); const response = await fetch(`${backendUrl}${path}`, { credentials: 'include', headers }); if (!response.ok) throw new Error(`Export failed (${response.status})`); const blob = await response.blob(); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = filename; anchor.click(); URL.revokeObjectURL(url); setMessage(`${filename} downloaded.`) } catch (error) { setMessage(error instanceof Error ? error.message : 'Export failed. Sign in and try again.') } }; return <><div className="demo-banner"><CircleHelp size={15} /><span><strong>Report workspace</strong> Exports use approved stored observations and include the current data limitations.</span></div><PageHeader eyebrow="Documents · reports" title="Reports and exports" description="Download the selected approved measurements as CSV or PDF." action={<button className="button primary" onClick={() => download('/api/reports/summary.pdf', 'aquasense-summary.pdf')}><FileText size={15} /> Generate PDF</button>} /><div className="report-summary"><MetricCard label="PDF report" value="Ready" detail="Approved data and limitations" icon={<FileText size={17} />} /><MetricCard label="CSV export" value="Ready" detail="Measurement rows" icon={<Cloud size={17} />} /><MetricCard label="Access" value="Protected" detail="Requires signed-in account" icon={<Check size={17} />} /></div><section className="panel reports-table"><div className="panel-heading"><div><div className="eyebrow">Machine-readable export</div><h2>Approved measurement data</h2></div><button className="text-button" onClick={() => download('/api/reports/measurements.csv', 'aquasense-measurements.csv')}>Export CSV <ArrowUpRight size={14} /></button></div><div className="empty-module"><FileText size={22} className="cyan-icon" /><p>Exports are generated from backend data, not hardcoded preview rows.</p></div>{message && <div className="form-message success"><CheckCircle2 size={15} />{message}</div>}</section></> }
  function SettingsPage({ role, onRoleChange, theme, onThemeChange, location, geoStatus, requestLocation }: { role: Role; onRoleChange: (role: Role) => void; theme: Theme; onThemeChange: (theme: Theme) => void; location: LiveLocation | null; geoStatus: 'idle' | 'requesting' | 'granted' | 'denied'; requestLocation: () => void }) { return <><PageHeader eyebrow="System · settings" title="Settings" description="Configure account access, location sharing, and model defaults." /><section className="panel account-settings-card"><div className="panel-heading"><div><div className="eyebrow">Account and location</div><h2>Sharing controls</h2></div><span className="quality-badge good"><span className="status-dot green" />{role === 'admin' ? 'Admin' : 'User'}</span></div><div className="account-settings-grid"><div><span className="eyebrow">Role</span><div className="role-switch inline"><button className={role === 'user' ? 'selected' : ''} onClick={() => onRoleChange('user')}><Radio size={14} />User</button><button className={role === 'admin' ? 'selected' : ''} onClick={() => onRoleChange('admin')}><ShieldCheck size={14} />Admin</button></div></div><div><span className="eyebrow">Background</span><div className="theme-switch inline"><button className={theme === 'light' ? 'selected' : ''} onClick={() => onThemeChange('light')}><Sun size={14} />Bright</button><button className={theme === 'dark' ? 'selected' : ''} onClick={() => onThemeChange('dark')}><Moon size={14} />Dark</button></div></div><div><span className="eyebrow">Live site location</span><strong className="setting-location">{location ? formatCoordinates(location) : 'Not connected'}</strong><button className="text-button" onClick={requestLocation}><MapPinned size={14} /> {geoStatus === 'requesting' ? 'Requesting' : 'Use current location'}</button></div></div><div className="setting-note"><MapPinned size={15} />User submissions include the current browser location so an admin can review where the test was performed.</div></section><div className="settings-grid"><section className="panel settings-panel"><div className="panel-heading"><div><div className="eyebrow">Model information</div><h2>Inference contract</h2></div><span className="quality-badge good"><span className="status-dot green" />Trained profile</span></div><div className="setting-row"><span>Model version</span><strong>{modelProfile.version}</strong></div><div className="setting-row"><span>Expected features</span><strong>{modelProfile.featureOrder.length} parameters</strong></div><div className="setting-row"><span>Feature order</span><strong className="mono">{modelProfile.featureOrder.join(' → ')}</strong></div><div className="setting-row"><span>Output labels</span><strong>{modelProfile.classes.join(' · ')}</strong></div><div className="setting-note"><CircleHelp size={15} />{modelProfile.source}. The labels are derived from a screening formula, not laboratory-confirmed classes.</div></section><section className="panel settings-panel"><div className="panel-heading"><div><div className="eyebrow">Quality parameters</div><h2>Configured inputs</h2></div><button className="icon-button"><MoreHorizontal size={17} /></button></div>{parameterConfig.map((config) => <div className="setting-row" key={config.key}><span><span className="setting-name-dot" style={{ background: config.color }} />{config.name}</span><strong>{config.unit} · valid {config.min}–{config.max}</strong></div>)}<div className="setting-note"><SlidersHorizontal size={15} />Parameter configuration drives tiles, validation, feature vectors, and report tables.</div></section><section className="panel settings-panel wide"><div className="panel-heading"><div><div className="eyebrow">Reference standards</div><h2>Screening limits</h2></div><button className="button ghost small">Edit limits</button></div><p className="settings-copy">Current reference: configurable BIS IS 10500 profile. Verify limits against the current standard before making health-critical decisions.</p><div className="standards-table"><div className="table-row table-head"><span>Parameter</span><span>Unit</span><span>Good range</span><span>Review above</span></div>{parameterConfig.map((config) => <div className="table-row" key={config.key}><span>{config.name}</span><span className="muted-cell">{config.unit}</span><span className="mono">≤ {config.standard.good}</span><span className="mono">&gt; {config.standard.warn}</span></div>)}</div></section></div></> }
 
 function SettingsPageV2({ account, theme, onThemeChange, location, geoStatus, requestLocation, onSignOut }: { account: Account; theme: Theme; onThemeChange: (theme: Theme) => void; location: LiveLocation | null; geoStatus: 'idle' | 'requesting' | 'granted' | 'denied'; requestLocation: () => void; onSignOut: () => void }) {
@@ -883,19 +881,13 @@ function SubmitMonitoringPage({ account, location, onSubmitted }: { account: Acc
       if (!groundwaterPayload && !qualityPayload) throw new Error('Enter at least one measured value.')
       const payload = { station_id: stationId, measurement_at: new Date(measurementAt).toISOString(), measurement_method: method, source: 'user-entered', groundwater: groundwaterPayload, quality: qualityPayload, remarks: remarks.trim() || undefined, save_as_draft: saveAsDraft }
       let created: SubmissionRecord
-      try {
-        created = await apiFetch<SubmissionRecord>('/api/submissions', { method: 'POST', body: JSON.stringify(payload) })
-      } catch (apiError) {
-        if (!readStorage<string | null>('api-token', null)) {
-          const localItems = readStorage<SubmissionRecord[]>('local-submissions', [])
-          created = { id: `local-${Date.now()}`, station_id: stationId, measurement_at: payload.measurement_at, status: saveAsDraft ? 'Draft' : 'Submitted', source: 'user-entered', measurement_method: method, remarks, validation_warnings: [], version: 1, quality: qualityPayload, groundwater: groundwaterPayload }
-          writeStorage('local-submissions', [created, ...localItems])
-        } else throw apiError
-      }
+      created = await apiFetch<SubmissionRecord>('/api/submissions', { method: 'POST', body: JSON.stringify(payload) })
       if (attachment && created.id && !created.id.startsWith('local-')) {
-        const token = readStorage<string | null>('api-token', null)
+        const csrf = document.cookie.split('; ').find((item) => item.startsWith('aquasense_csrf='))?.split('=')[1]
+        const headers = new Headers()
+        if (csrf) headers.set('X-CSRF-Token', decodeURIComponent(csrf))
         const form = new FormData(); form.append('file', attachment)
-        const response = await fetch(`${backendUrl}/api/submissions/${created.id}/attachments`, { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : undefined, body: form })
+        const response = await fetch(`${backendUrl}/api/submissions/${created.id}/attachments`, { method: 'POST', headers, credentials: 'include', body: form })
         if (!response.ok) throw new Error('Submission saved, but the attachment could not be stored.')
       }
       setMessage(saveAsDraft ? 'Draft saved. You can return to My submissions and continue it.' : 'Submission received. It is awaiting administrator review before analytics use.')
@@ -926,7 +918,7 @@ function MySubmissionsPage() {
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const load = () => { setLoading(true); apiFetch<{ items: SubmissionRecord[]; total: number }>('/api/submissions/mine').then((result) => setItems(result.items)).catch(() => setItems(readStorage<SubmissionRecord[]>('local-submissions', []))).catch((loadError) => setError(loadError instanceof Error ? loadError.message : 'Unable to load submissions.')).finally(() => setLoading(false)) }
+  const load = () => { setLoading(true); setError(''); apiFetch<{ items: SubmissionRecord[]; total: number }>('/api/submissions/mine').then((result) => setItems(result.items)).catch((loadError) => { setItems([]); setError(loadError instanceof Error ? loadError.message : 'Unable to load submissions.') }).finally(() => setLoading(false)) }
   useEffect(() => { load() }, [])
   const filtered = status ? items.filter((item) => item.status === status) : items
   return <><PageHeader eyebrow="Data submission · history" title="My submissions" description="Only your records are shown here. Review status and feedback remain attached to each original submission." action={<button className="button ghost" onClick={load}><RefreshCw size={14} /> Refresh</button>} /><div className="filter-row"><button className={`filter ${status === '' ? 'active' : ''}`} onClick={() => setStatus('')}>All <span>{items.length}</span></button>{['Draft', 'Submitted', 'Approved', 'Rejected', 'Correction Requested'].map((value) => <button className={`filter ${status === value ? 'active' : ''}`} key={value} onClick={() => setStatus(value)}>{value}</button>)}<span className="filter-spacer" /></div><section className="panel submission-table"><div className="table-row table-head submission-row"><span>Submission</span><span>Measured</span><span>Category</span><span>Status</span><span>Warnings</span><span>Version</span></div>{loading ? <div className="empty-module"><RefreshCw size={20} className="cyan-icon" /><p>Loading your submissions…</p></div> : error ? <div className="form-message error"><AlertTriangle size={15} />{error}</div> : filtered.length === 0 ? <div className="empty-module"><ClipboardCheck size={24} className="cyan-icon" /><h2>No records in this filter</h2><p>Submit a groundwater or water-quality observation to create the first auditable record.</p></div> : filtered.map((item) => <div className="table-row submission-row" key={item.id}><span><strong>{item.id.slice(0, 12)}</strong><small>{item.station_id}</small></span><span className="muted-cell">{new Date(item.measurement_at).toLocaleString()}</span><span>{item.quality ? 'Water quality' : 'Groundwater'}</span><span><span className={`submission-status ${item.status.toLowerCase().replaceAll(' ', '-')}`}>{item.status}</span></span><span className={item.validation_warnings.length ? 'warning-text' : 'muted-cell'}>{item.validation_warnings.length ? `${item.validation_warnings.length} flagged` : 'None'}</span><span>v{item.version}</span>{item.review_feedback && <small className="review-feedback">Feedback: {item.review_feedback}</small>}</div>)}</section></>
@@ -952,10 +944,13 @@ function LiveMonitoringPage({ location, geoStatus, requestLocation, role }: { lo
   const [history, setHistory] = useState<LiveReading[]>([])
   const [liveDevices, setLiveDevices] = useState<Record<string, LiveReading>>({})
   const [historyPaused, setHistoryPaused] = useState(false)
-  const acceptReadings = (incoming: LiveReading[]) => {
+  const acceptReadings = (incoming: LiveReading[], replaceSnapshot = false) => {
     const stamped = incoming.map((reading) => ({ ...reading, receivedAt: Date.now() }))
     setLiveDevices((current) => {
-      const next = { ...current }
+      // Poll responses are a server snapshot. Replacing the map lets a device
+      // fall offline when its last packet ages out instead of refreshing a
+      // stale reading's client-side timestamp forever. WebSocket events merge.
+      const next: Record<string, LiveReading> = replaceSnapshot ? {} : { ...current }
       stamped.forEach((reading) => { next[reading.device_id] = reading })
       return next
     })
@@ -963,8 +958,8 @@ function LiveMonitoringPage({ location, geoStatus, requestLocation, role }: { lo
   }
   const load = async () => {
     try {
-      const next = await apiFetch<LiveReading[]>('/api/measurements?status=pending_review&limit=20')
-      acceptReadings(next)
+      const next = await apiFetch<LiveReading[]>(role === 'admin' ? '/api/admin/measurements/live?limit=20' : '/api/measurements/live?limit=20')
+      acceptReadings(next, true)
     } catch {
       // Admin preview endpoint is authenticated and returns the current live
       // packets in production without exposing them to unauthenticated users.
@@ -978,8 +973,7 @@ function LiveMonitoringPage({ location, geoStatus, requestLocation, role }: { lo
     let disposed = false
     const connect = () => {
       if (disposed) return
-      const token = readStorage<string | null>('api-token', null)
-      socket = new WebSocket(`${backendUrl.replace(/^http/, 'ws')}/api/ws/measurements${token ? `?token=${encodeURIComponent(token)}` : ''}`)
+      socket = new WebSocket(`${backendUrl.replace(/^http/, 'ws')}/api/ws/measurements`)
       socket.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data) as { measurement?: LiveReading }
@@ -994,7 +988,7 @@ function LiveMonitoringPage({ location, geoStatus, requestLocation, role }: { lo
     // environments where cross-origin WebSockets are delayed or interrupted.
     const fallbackTimer = window.setInterval(load, 1500)
     return () => { disposed = true; window.clearInterval(fallbackTimer); if (reconnectTimer) window.clearTimeout(reconnectTimer); socket?.close() }
-  }, [historyPaused])
+  }, [historyPaused, role])
   const now = Date.now()
   const onlineDevices = Object.values(liveDevices).filter((reading) => reading.receivedAt != null && now - reading.receivedAt <= 10000)
   const latest = onlineDevices[0] ?? Object.values(liveDevices)[0] ?? history[0]
@@ -1041,9 +1035,14 @@ function HistoryAnalyticsPage({ values, location }: { values: Record<string, num
 
 function DevicesStationsPage({ role, location }: { role: Role; location: LiveLocation | null }) {
   const [deviceName, setDeviceName] = useState('')
-  const [devices, setDevices] = useState([{ id: 'ESP32-DEMO-001', name: 'Demo ultrasonic level sensor', status: 'Demo offline' }])
-  const addDevice = (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); if (!deviceName.trim()) return; setDevices((previous) => [...previous, { id: `ESP32-${previous.length + 1}`.padEnd(12, '0'), name: deviceName.trim(), status: 'Registered locally' }]); setDeviceName('') }
-  return <><PageHeader eyebrow="Iot · devices and stations" title="Devices and stations" description="Register ESP32 devices, assign stations, and keep hardware status explicit." action={role === 'admin' ? <form className="inline-add-form" onSubmit={addDevice}><input aria-label="Device name" value={deviceName} onChange={(event) => setDeviceName(event.target.value)} placeholder="New device name" /><button className="button primary" type="submit"><Zap size={14} /> Register</button></form> : undefined} /><div className="module-grid three"><MetricCard label="Registered devices" value={String(devices.length)} detail="Local workspace registry" icon={<Zap size={17} />} /><MetricCard label="Stations" value={location ? '1' : '0'} detail={location ? 'Current test site' : 'Add a site from the map'} icon={<MapPinned size={17} />} /><MetricCard label="Permissions" value={role === 'admin' ? 'Admin write' : 'Read only'} detail="Backend protects device changes" icon={<ShieldCheck size={17} />} /></div><section className="panel module-card"><div className="panel-heading"><div><div className="eyebrow">Device registry</div><h2>Connected hardware</h2></div><span className="quality-badge amber"><span className="status-dot amber" />No live Wi-Fi</span></div>{devices.map((device) => <div className="device-row" key={device.id}><div className="device-icon"><Zap size={15} /></div><div><strong>{device.name}</strong><span>{device.id} · {device.status}</span></div><span className="status-pill marginal">Offline-safe</span></div>)}</section></>
+  const [deviceId, setDeviceId] = useState('ESP32-001')
+  const [ingestKey, setIngestKey] = useState('')
+  const [devices, setDevices] = useState<Array<{ device_id: string; name: string; status: string; last_seen_at?: string | null }>>([])
+  const [error, setError] = useState('')
+  const load = () => apiFetch<typeof devices>('/api/devices').then(setDevices).catch((e) => setError(e instanceof Error ? e.message : 'Could not load devices'))
+  useEffect(() => { load() }, [])
+  const addDevice = async (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); setError(''); try { await apiFetch('/api/devices', { method: 'POST', body: JSON.stringify({ device_id: deviceId.trim(), name: deviceName.trim(), device_type: 'ESP32', ingest_key: ingestKey }) }); setDeviceName(''); setIngestKey(''); load() } catch (e) { setError(e instanceof Error ? e.message : 'Device registration failed') } }
+  return <><PageHeader eyebrow="Iot · devices and stations" title="Devices and stations" description="Manage the backend device registry and live connection status." action={role === 'admin' ? <form className="inline-add-form" onSubmit={addDevice}><input aria-label="Device ID" value={deviceId} onChange={(event) => setDeviceId(event.target.value)} placeholder="ESP32-001" required /><input aria-label="Device name" value={deviceName} onChange={(event) => setDeviceName(event.target.value)} placeholder="Device name" required /><input aria-label="Device ingestion key" value={ingestKey} onChange={(event) => setIngestKey(event.target.value)} placeholder="Unique ingest key" required /><button className="button primary" type="submit"><Zap size={14} /> Register</button></form> : undefined} /><div className="module-grid three"><MetricCard label="Registered devices" value={String(devices.length)} detail="Backend device registry" icon={<Zap size={17} />} /><MetricCard label="Stations" value={location ? '1 selected' : 'Use map to set'} detail={location ? formatCoordinates(location) : 'Current test site'} icon={<MapPinned size={17} />} /><MetricCard label="Permissions" value={role === 'admin' ? 'Admin write' : 'Read only'} detail="Enforced by backend" icon={<ShieldCheck size={17} />} /></div>{error && <div className="form-message error"><AlertTriangle size={15} />{error}</div>}<section className="panel module-card"><div className="panel-heading"><div><div className="eyebrow">Device registry</div><h2>Registered hardware</h2></div><button className="button ghost small" onClick={load}><RefreshCw size={14} /> Refresh</button></div>{devices.length ? devices.map((device) => <div className="device-row" key={device.device_id}><div className="device-icon"><Zap size={15} /></div><div><strong>{device.name}</strong><span>{device.device_id} · {device.last_seen_at ? `Last seen ${new Date(device.last_seen_at).toLocaleString()}` : 'No packets received yet'}</span></div><span className={`status-pill ${device.status === 'online' ? 'within' : 'marginal'}`}>{device.status}</span></div>) : <div className="empty-module"><Zap size={22} className="cyan-icon" /><h2>No registered devices</h2><p>Register your ESP32 here; packets arriving with its device ID will update its last-seen status.</p></div>}</section></>
 }
 
 function EducationPage() {
@@ -1068,22 +1067,24 @@ function ProfilePage({ account, onAccountUpdate }: { account: Account; onAccount
   const [verificationError, setVerificationError] = useState('')
   const requestCode = async () => { try { const result = await apiFetch<{ message: string; development_code?: string }>('/api/verification/request', { method: 'POST', body: JSON.stringify({ channel: verificationChannel }) }); setVerificationMessage(result.development_code ? `${result.message} Development code: ${result.development_code}` : result.message); setVerificationError('') } catch (error) { setVerificationError(error instanceof Error ? error.message : 'Unable to request verification.') } }
   const confirmCode = async () => { try { const result = await apiFetch<{ email_verified: boolean; mobile_verified: boolean }>('/api/verification/confirm', { method: 'POST', body: JSON.stringify({ channel: verificationChannel, code: verificationCode }) }); onAccountUpdate({ emailVerified: result.email_verified, mobileVerified: result.mobile_verified }); setVerificationMessage(`${verificationChannel === 'email' ? 'Email' : 'Mobile'} verified.`); setVerificationError('') } catch (error) { setVerificationError(error instanceof Error ? error.message : 'Unable to verify contact.') } }
-  const saveProfile = async () => { try { const result = await apiFetch<{ name: string }>('/api/profile', { method: 'PATCH', body: JSON.stringify({ name: name.trim() || account.name }) }); onAccountUpdate({ name: result.name }); setSaved(true) } catch { onAccountUpdate({ name: name.trim() || account.name }); setSaved(true) } }
+  const saveProfile = async () => { try { const result = await apiFetch<{ name: string }>('/api/profile', { method: 'PATCH', body: JSON.stringify({ name: name.trim() || account.name }) }); onAccountUpdate({ name: result.name }); setSaved(true); setVerificationError('') } catch (error) { setVerificationError(error instanceof Error ? error.message : 'Profile save failed.'); setSaved(false) } }
   return <><PageHeader eyebrow="Account · profile" title="User profile" description="Manage identity, contact verification and the permissions assigned to this account." /><div className="profile-grid"><section className="panel module-card profile-card"><div className="profile-avatar">{account.role === 'admin' ? 'AD' : 'US'}</div><div className="profile-fields"><label>Full name<input value={name} onChange={(event) => setName(event.target.value)} /></label><label>Email address<input value={account.email} disabled /></label><label>Mobile number<input value={account.mobileNumber || 'Not provided'} disabled /></label><div className="profile-role"><span className="eyebrow">Role and access</span><strong>{account.role === 'admin' ? 'Administrator' : 'Standard user'}</strong><span>{account.role === 'admin' ? 'Can manage users, stations, submissions and system health.' : 'Can submit readings and review your own history.'}</span></div><button className="button primary" onClick={saveProfile}><Save size={14} />{saved ? 'Profile saved' : 'Save profile'}</button></div></section><section className="panel module-card verification-panel"><div className="panel-heading"><div><div className="eyebrow">Contact verification</div><h2>Verify delivery channels</h2></div><UserCheck size={18} className="cyan-icon" /></div><VerificationRow label="Email" value={account.email} verified={Boolean(account.emailVerified)} /><VerificationRow label="Mobile" value={account.mobileNumber || 'Not provided'} verified={Boolean(account.mobileVerified)} /><div className="verification-actions"><select value={verificationChannel} onChange={(event) => setVerificationChannel(event.target.value as 'email' | 'mobile')}><option value="email">Email verification</option><option value="mobile">Mobile verification</option></select><button className="button ghost" onClick={requestCode}><Send size={14} /> Request code</button><input aria-label="Verification code" value={verificationCode} onChange={(event) => setVerificationCode(event.target.value)} placeholder="6-digit code" maxLength={6} /><button className="button primary" onClick={confirmCode}><Check size={14} /> Confirm</button></div>{verificationMessage && <div className="form-message success"><CheckCircle2 size={15} />{verificationMessage}</div>}{verificationError && <div className="form-message error"><AlertTriangle size={15} />{verificationError}</div>}<div className="setting-note"><ShieldCheck size={15} />Contact details remain unverified until the code is confirmed. Provider delivery is simulated only in development mode.</div></section></div></>
 }
 
 function VerificationRow({ label, value, verified }: { label: string; value: string; verified: boolean }) { return <div className="verification-row"><span>{label}</span><strong>{value}</strong><span className={`submission-status ${verified ? 'approved' : 'unverified'}`}>{verified ? 'Verified' : 'Unverified'}</span></div> }
 
-function AdminPage({ accounts }: { accounts: Account[] }) {
+function AdminPage({ accounts, currentAccountId }: { accounts: Account[]; currentAccountId: string }) {
   const [stats, setStats] = useState<{ total_users: number; verified_users: number; active_stations: number; total_submissions: number; awaiting_review: number; approved_submissions: number; rejected_submissions: number; failed_reminders: number; warning_count: number } | null>(null)
   const [queue, setQueue] = useState<SubmissionRecord[]>([])
   const [deviceQueue, setDeviceQueue] = useState<DeviceReviewRecord[]>([])
+  const [managedUsers, setManagedUsers] = useState<Array<{ id: string; name: string; email: string; role: Role; account_status?: string }>>([])
   const [message, setMessage] = useState('')
-  const load = () => { apiFetch<typeof stats>('/api/admin/stats').then(setStats).catch(() => setStats(null)); apiFetch<{ items: SubmissionRecord[] }>('/api/admin/submissions?status=Submitted').then((result) => setQueue(result.items)).catch(() => setQueue(readStorage<SubmissionRecord[]>('local-submissions', []).filter((item) => item.status === 'Submitted'))); apiFetch<DeviceReviewRecord[]>('/api/admin/measurements?status=pending_review&limit=40').then(setDeviceQueue).catch(() => fetch(`${backendUrl}/api/admin/measurements/live-preview?status=pending_review&limit=40`).then((response) => response.ok ? response.json() as Promise<DeviceReviewRecord[]> : Promise.reject()).then(setDeviceQueue).catch(() => setDeviceQueue([]))) }
+  const load = () => { apiFetch<typeof stats>('/api/admin/stats').then(setStats).catch(() => setStats(null)); apiFetch<{ items: SubmissionRecord[] }>('/api/admin/submissions?status=Submitted').then((result) => setQueue(result.items)).catch(() => setQueue([])); apiFetch<DeviceReviewRecord[]>('/api/admin/measurements/live?limit=40').then(setDeviceQueue).catch(() => setDeviceQueue([])); apiFetch<typeof managedUsers>('/api/admin/users').then(setManagedUsers).catch(() => setManagedUsers([])) }
   useEffect(() => { load() }, [])
-  const review = async (id: string, status: 'Approved' | 'Rejected' | 'Correction Requested') => { const reason = status === 'Approved' ? undefined : window.prompt(status === 'Rejected' ? 'Required rejection reason' : 'Required correction request') || ''; if (status !== 'Approved' && !reason) return; try { await apiFetch(`/api/admin/submissions/${id}/review`, { method: 'POST', body: JSON.stringify({ status, reason }) }) } catch { const local = readStorage<SubmissionRecord[]>('local-submissions', []); writeStorage('local-submissions', local.map((item) => item.id === id ? { ...item, status, review_feedback: reason } : item)) } setMessage(`Submission ${status.toLowerCase()}.`); load() }
-  const reviewDevice = async (id: string, status: 'Approved' | 'Rejected') => { const reason = status === 'Rejected' ? window.prompt('Required rejection reason') || '' : undefined; if (status === 'Rejected' && !reason) return; try { try { await apiFetch(`/api/admin/measurements/${id}/review`, { method: 'POST', body: JSON.stringify({ status, reason }) }) } catch { await fetch(`${backendUrl}/api/admin/measurements/live-preview/${id}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status, reason }) }) } setMessage(`Device reading ${status.toLowerCase()}. Admin notification recorded.`); load() } catch (error) { setMessage(error instanceof Error ? error.message : 'Device review failed.') } }
-  return <><PageHeader eyebrow="Admin · data management" title="Administration" description="Review submissions, monitor delivery health and control which data enters approved analytics." action={<button className="button ghost" onClick={load}><RefreshCw size={14} /> Refresh queue</button>} /><div className="metric-grid"><MetricCard label="Registered users" value={String(stats?.total_users ?? accounts.length)} detail={`${stats?.verified_users ?? 0} fully verified`} icon={<Users size={17} />} /><MetricCard label="Total submissions" value={String(stats?.total_submissions ?? 0)} detail={`${stats?.awaiting_review ?? 0} awaiting review`} icon={<Database size={17} />} /><MetricCard label="Approved data" value={String(stats?.approved_submissions ?? 0)} detail="Eligible for analytics" icon={<CheckCircle2 size={17} />} /><MetricCard label="Reminder failures" value={String(stats?.failed_reminders ?? 0)} detail={`${stats?.warning_count ?? 0} data-quality warnings`} icon={<Send size={17} />} tone={stats?.failed_reminders ? 'amber' : undefined} /></div><div className="admin-management-grid"><section className="panel module-card"><div className="panel-heading"><div><div className="eyebrow">Device review queue</div><h2>ESP32 readings awaiting promotion</h2></div><span className="quality-badge amber"><Radio size={14} />{deviceQueue.length} pending</span></div>{deviceQueue.length === 0 ? <div className="empty-module"><Radio size={24} className="cyan-icon" /><h2>No device readings waiting</h2><p>Connected ESP32 packets appear here as pending until an administrator reviews them.</p></div> : deviceQueue.slice(0, 12).map((item) => <div className="review-row" key={item.id}><div><strong>{item.device_id}</strong><span>{new Date(item.timestamp).toLocaleString()} · {item.distance_cm?.toFixed(1) ?? '—'} cm · {item.water_level_percent?.toFixed(1) ?? '—'}%</span><small>{item.site_latitude != null ? `Site ${item.site_latitude.toFixed(5)}, ${item.site_longitude?.toFixed(5)}` : 'No site snapshot attached'}</small></div><div className="review-actions"><button className="button primary small" onClick={() => reviewDevice(item.id, 'Approved')}><Check size={13} />Promote</button><button className="icon-button" aria-label={`Reject device reading ${item.device_id}`} onClick={() => reviewDevice(item.id, 'Rejected')}><AlertTriangle size={15} /></button></div></div>)}</section><section className="panel module-card"><div className="panel-heading"><div><div className="eyebrow">Submission review queue</div><h2>New data awaiting review</h2></div><span className="quality-badge amber"><Clock3 size={14} />{queue.length} pending</span></div>{queue.length === 0 ? <div className="empty-module"><ClipboardCheck size={24} className="cyan-icon" /><h2>Queue is clear</h2><p>Submitted records will appear here before they are promoted to analytics.</p></div> : queue.map((item) => <div className="review-row" key={item.id}><div><strong>{item.id.slice(0, 12)}</strong><span>{item.quality ? 'Water quality' : 'Groundwater'} · {new Date(item.measurement_at).toLocaleString()}</span><small>{item.validation_warnings.length ? `${item.validation_warnings.length} warning(s)` : 'No validation warnings'}</small></div><div className="review-actions"><button className="button ghost small" onClick={() => review(item.id, 'Correction Requested')}>Request correction</button><button className="button primary small" onClick={() => review(item.id, 'Approved')}><Check size={13} />Approve</button><button className="icon-button" aria-label="Reject submission" onClick={() => review(item.id, 'Rejected')}><AlertTriangle size={15} /></button></div></div>)}</section><section className="panel module-card"><div className="panel-heading"><div><div className="eyebrow">User management</div><h2>Workspace accounts</h2></div><span className="quality-badge good"><ShieldCheck size={14} />Admin only</span></div>{accounts.map((account) => <div className="device-row" key={account.id}><div className="device-icon"><Users size={15} /></div><div><strong>{account.name}</strong><span>{account.email} · {account.role}</span></div><span className="status-pill within">Active</span></div>)}</section></div>{message && <div className="form-message success"><CheckCircle2 size={15} />{message}</div>}<div className="setting-note"><ShieldCheck size={15} />Backend permissions are enforced on every review route. Device promotion and user-submission review both create audit and admin notification records. Rejected and unreviewed submissions remain preserved and cannot become training data.</div></>
+  const review = async (id: string, status: 'Approved' | 'Rejected' | 'Correction Requested') => { const reason = status === 'Approved' ? undefined : window.prompt(status === 'Rejected' ? 'Required rejection reason' : 'Required correction request') || ''; if (status !== 'Approved' && !reason) return; try { await apiFetch(`/api/admin/submissions/${id}/review`, { method: 'POST', body: JSON.stringify({ status, reason }) }); setMessage(`Submission ${status.toLowerCase()}.`); load() } catch (error) { setMessage(error instanceof Error ? error.message : 'Submission review failed.') } }
+  const reviewDevice = async (id: string, status: 'Approved' | 'Rejected') => { const reason = status === 'Rejected' ? window.prompt('Required rejection reason') || '' : undefined; if (status === 'Rejected' && !reason) return; try { await apiFetch(`/api/admin/measurements/${id}/review`, { method: 'POST', body: JSON.stringify({ status, reason }) }); setMessage(`Device reading ${status.toLowerCase()}. Admin notification recorded.`); load() } catch (error) { setMessage(error instanceof Error ? error.message : 'Device review failed.') } }
+  const changeRole = async (user: typeof managedUsers[number], role: Role) => { try { await apiFetch(`/api/admin/users/${user.id}/role`, { method: 'PATCH', body: JSON.stringify({ role }) }); setMessage(`Updated ${user.email} to ${role}.`); load() } catch (error) { setMessage(error instanceof Error ? error.message : 'Role update failed.') } }
+  return <><PageHeader eyebrow="Admin · data management" title="Administration" description="Review submissions, monitor delivery health and control which data enters approved analytics." action={<button className="button ghost" onClick={load}><RefreshCw size={14} /> Refresh queue</button>} /><div className="metric-grid"><MetricCard label="Registered users" value={String(stats?.total_users ?? accounts.length)} detail={`${stats?.verified_users ?? 0} fully verified`} icon={<Users size={17} />} /><MetricCard label="Total submissions" value={String(stats?.total_submissions ?? 0)} detail={`${stats?.awaiting_review ?? 0} awaiting review`} icon={<Database size={17} />} /><MetricCard label="Approved data" value={String(stats?.approved_submissions ?? 0)} detail="Eligible for analytics" icon={<CheckCircle2 size={17} />} /><MetricCard label="Reminder failures" value={String(stats?.failed_reminders ?? 0)} detail={`${stats?.warning_count ?? 0} data-quality warnings`} icon={<Send size={17} />} tone={stats?.failed_reminders ? 'amber' : undefined} /></div><div className="admin-management-grid"><section className="panel module-card"><div className="panel-heading"><div><div className="eyebrow">Device review queue</div><h2>ESP32 readings awaiting promotion</h2></div><span className="quality-badge amber"><Radio size={14} />{deviceQueue.length} pending</span></div>{deviceQueue.length === 0 ? <div className="empty-module"><Radio size={24} className="cyan-icon" /><h2>No device readings waiting</h2><p>Connected ESP32 packets appear here as pending until an administrator reviews them.</p></div> : deviceQueue.slice(0, 12).map((item) => <div className="review-row" key={item.id}><div><strong>{item.device_id}</strong><span>{new Date(item.timestamp).toLocaleString()} · {item.distance_cm?.toFixed(1) ?? '—'} cm · {item.water_level_percent?.toFixed(1) ?? '—'}%</span><small>{item.site_latitude != null ? `Site ${item.site_latitude.toFixed(5)}, ${item.site_longitude?.toFixed(5)}` : 'No site snapshot attached'}</small></div><div className="review-actions"><button className="button primary small" onClick={() => reviewDevice(item.id, 'Approved')}><Check size={13} />Promote</button><button className="icon-button" aria-label={`Reject device reading ${item.device_id}`} onClick={() => reviewDevice(item.id, 'Rejected')}><AlertTriangle size={15} /></button></div></div>)}</section><section className="panel module-card"><div className="panel-heading"><div><div className="eyebrow">Submission review queue</div><h2>New data awaiting review</h2></div><span className="quality-badge amber"><Clock3 size={14} />{queue.length} pending</span></div>{queue.length === 0 ? <div className="empty-module"><ClipboardCheck size={24} className="cyan-icon" /><h2>Queue is clear</h2><p>Submitted records will appear here before they are promoted to analytics.</p></div> : queue.map((item) => <div className="review-row" key={item.id}><div><strong>{item.id.slice(0, 12)}</strong><span>{item.quality ? 'Water quality' : 'Groundwater'} · {new Date(item.measurement_at).toLocaleString()}</span><small>{item.validation_warnings.length ? `${item.validation_warnings.length} warning(s)` : 'No validation warnings'}</small></div><div className="review-actions"><button className="button ghost small" onClick={() => review(item.id, 'Correction Requested')}>Request correction</button><button className="button primary small" onClick={() => review(item.id, 'Approved')}><Check size={13} />Approve</button><button className="icon-button" aria-label="Reject submission" onClick={() => review(item.id, 'Rejected')}><AlertTriangle size={15} /></button></div></div>)}</section><section className="panel module-card"><div className="panel-heading"><div><div className="eyebrow">User management</div><h2>Workspace accounts</h2></div><span className="quality-badge good"><ShieldCheck size={14} />Admin only</span></div>{managedUsers.length ? managedUsers.map((user) => <div className="device-row" key={user.id}><div className="device-icon"><Users size={15} /></div><div><strong>{user.name}</strong><span>{user.email} · {user.account_status || 'active'}</span></div><div className="panel-actions"><span className="status-pill within">{user.role}</span>{user.id !== currentAccountId && <button className="button ghost small" onClick={() => changeRole(user, user.role === 'admin' ? 'user' : 'admin')}>Make {user.role === 'admin' ? 'user' : 'admin'}</button>}</div></div>) : <div className="empty-module"><Users size={22} className="cyan-icon" /><p>{accounts.length ? 'User list unavailable from the backend.' : 'No accounts available.'}</p></div>}</section></div>{message && <div className="form-message success"><CheckCircle2 size={15} />{message}</div>}<div className="setting-note"><ShieldCheck size={15} />Backend permissions are enforced on every review route. Device promotion and user-submission review both create audit and admin notification records. Rejected and unreviewed submissions remain preserved and cannot become training data.</div></>
 }
 
 function AccessDeniedPage() {
@@ -1097,7 +1098,7 @@ function AlertItem({ title, meta, tone }: { title: string; meta: string; tone: s
 function AlertTableRow({ title, site, time, severity, state, tone }: { title: string; site: string; time: string; severity: string; state: string; tone: string }) { return <div className="table-row"><span className="alert-title"><span className={`alert-icon ${tone}`}><AlertTriangle size={13} /></span><strong>{title}</strong></span><span>{site}</span><span className="muted-cell">{time}</span><span><span className={`severity ${tone}`}>{severity}</span></span><span><span className={`state ${state.toLowerCase()}`}>{state}</span></span><button className="icon-button"><MoreHorizontal size={16} /></button></div> }
 function ReportRow({ name, site, time, classification }: { name: string; site: string; time: string; classification: string }) { return <div className="table-row"><span className="report-name"><FileText size={16} /><strong>{name}</strong></span><span>{site}</span><span className="muted-cell">{time}</span><span className="quality-cell">{classification}</span><span className="file-type">PDF</span><button className="icon-button"><MoreHorizontal size={16} /></button></div> }
 
-function AuthScreen({ accounts, onAuthenticated }: { accounts: Account[]; onAuthenticated: (account: Account, nextAccounts?: Account[]) => void }) {
+function AuthScreen({ accounts, onAuthenticated }: { accounts: Account[]; onAuthenticated: (account: Account) => void }) {
   const initialResetToken = new URLSearchParams(window.location.search).get('reset_token') || ''
   const [mode, setMode] = useState<AuthMode>(initialResetToken ? 'forgot' : 'signin')
   const [name, setName] = useState('')
@@ -1186,8 +1187,7 @@ function AuthScreen({ accounts, onAuthenticated }: { accounts: Account[]; onAuth
       try {
         const result = await backendAuth('signup', { name: name.trim(), email: normalizedEmail, mobile_number: mobileNumber.trim(), password, password_confirmation: passwordConfirmation, reminder_consent: String(reminderConsent), preferred_reminder_channel: 'email', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kolkata' })
         const account: Account = { ...accountFromBackend(result.user), lastLocation: null }
-        writeStorage('api-token', result.token)
-        onAuthenticated(account, [...accounts, account])
+        onAuthenticated(account)
         return
       } catch (backendError) {
         if (!(backendError instanceof TypeError)) {
@@ -1200,11 +1200,8 @@ function AuthScreen({ accounts, onAuthenticated }: { accounts: Account[]; onAuth
     }
     try {
       const result = await backendAuth('signin', { email: normalizedEmail, password })
-      const existing = accounts.find((candidate) => candidate.email === normalizedEmail)
-      const account: Account = existing ? { ...existing, ...accountFromBackend(result.user), lastLocation: existing.lastLocation } : { ...accountFromBackend(result.user), lastLocation: null }
-      const nextAccounts = existing ? accounts.map((candidate) => candidate.id === existing.id ? account : candidate) : [...accounts, account]
-      writeStorage('api-token', result.token)
-      onAuthenticated(account, nextAccounts)
+      const account: Account = { ...accountFromBackend(result.user), lastLocation: null }
+      onAuthenticated(account)
       return
     } catch (backendError) {
       setError(backendError instanceof TypeError ? 'Backend is unavailable. Start FastAPI before signing in.' : backendError instanceof Error ? backendError.message : 'Unable to sign in to the backend.')
@@ -1220,32 +1217,55 @@ function AuthScreen({ accounts, onAuthenticated }: { accounts: Account[]; onAuth
 }
 
 function RootApp() {
-  const [accounts, setAccounts] = useState<Account[]>(() => persistedAccounts(readStorage<Account[]>('accounts', [])))
-  const [sessionId, setSessionId] = useState<string | null>(() => readStorage<string | null>('session-id', null))
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [sessionRestored, setSessionRestored] = useState(false)
   const currentAccount = accounts.find((account) => account.id === sessionId) ?? null
 
-  const authenticate = (account: Account, nextAccounts = accounts) => {
-    setAccounts(nextAccounts)
-    writeStorage('accounts', persistedAccounts(nextAccounts))
+  useEffect(() => {
+    let active = true
+    // Restore identity and role from the backend session cookie. Local storage
+    // is not an authentication source and no longer stores contact details.
+    try {
+      window.localStorage.removeItem(storageKey('accounts'))
+      window.localStorage.removeItem(storageKey('session-id'))
+      window.localStorage.removeItem(storageKey('api-token'))
+    } catch { /* browser storage may be unavailable */ }
+    apiFetch<Parameters<typeof accountFromBackend>[0]>('/api/auth/me', { signal: AbortSignal.timeout(8000) })
+      .then((user) => {
+        if (!active) return
+        const account: Account = { ...accountFromBackend(user), lastLocation: null }
+        setAccounts([account])
+        setSessionId(account.id)
+      })
+      .catch(() => {
+        if (active) { setAccounts([]); setSessionId(null) }
+      })
+      .finally(() => { if (active) setSessionRestored(true) })
+    return () => { active = false }
+  }, [])
+
+  const authenticate = (account: Account) => {
+    setAccounts([account])
     setSessionId(account.id)
-    writeStorage('session-id', account.id)
   }
 
   const updateAccount = (patch: Partial<Account>) => {
     if (!currentAccount) return
     setAccounts((previous) => {
       const next = previous.map((account) => account.id === currentAccount.id ? { ...account, ...patch } : account)
-      writeStorage('accounts', persistedAccounts(next))
       return next
     })
   }
 
   const signOut = () => {
+    void apiFetch('/api/auth/logout', { method: 'POST' }).catch(() => undefined)
+    setAccounts([])
     setSessionId(null)
-    writeStorage('session-id', null)
-    writeStorage('api-token', null)
+    try { window.localStorage.removeItem(storageKey('api-token')) } catch { /* storage may be unavailable */ }
   }
 
+  if (!sessionRestored) return <main className="auth-shell"><section className="auth-card"><div className="eyebrow">AquaSense AI</div><h2>Restoring secure session…</h2><p className="auth-subtitle">Checking your sign-in with the API.</p></section></main>
   if (!currentAccount) return <AuthScreen accounts={accounts} onAuthenticated={authenticate} />
   return <App accounts={accounts} currentAccount={currentAccount} onAccountUpdate={updateAccount} onSignOut={signOut} />
 }

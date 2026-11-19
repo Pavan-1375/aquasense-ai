@@ -14,7 +14,7 @@ Use `http://127.0.0.1:8000/docs` for interactive OpenAPI documentation and `http
 
 ## Core contracts
 
-- `POST /api/auth/signup` requires full name, email, international mobile, password confirmation and reminder consent; the first account is `admin` and later accounts are `user`.
+- `POST /api/auth/signup` requires full name, email, international mobile, password confirmation and reminder consent; development bootstraps the first account as `admin`. Production requires `BOOTSTRAP_ADMIN_EMAIL` to match the initial administrator email; later accounts are `user`.
 - `POST /api/auth/signin` returns a seven-day bearer session token.
 - `POST /api/verification/request` and `POST /api/verification/confirm` implement short-lived email/mobile verification codes. Development mode returns a code and records that delivery was simulated.
 - `POST /api/ingest/http` accepts the ESP32 reading schema and requires `X-Device-Key`; send `X-Idempotency-Key` for safe retries.
@@ -82,9 +82,9 @@ The bridge accepts newline-delimited JSON such as:
 {"device_id":"ESP32-001","timestamp":"2026-10-27T12:00:00Z","distance_cm":20.0,"water_level_percent":null,"water_depth_cm":null,"temperature_c":null}
 ```
 
-Malformed messages, missing groundwater fields, duplicate device/timestamp pairs and invalid device keys are rejected. The existing OLED firmware can remain unchanged if it can be extended to emit the JSON line over USB serial.
+The bundled firmware sends its OLED values together in each JSON packet and writes `millis()` as a quoted numeric timestamp. The bridge recognizes that monotonic timestamp and replaces it with the computer's UTC receipt time; it does not alter the sensor values. Malformed messages, missing groundwater fields, duplicate device/timestamp pairs and invalid device keys are rejected.
 
 ## Production configuration
 
-Set a long random `SECRET_KEY`, replace the shared development ingestion key with per-device keys, configure PostgreSQL, restrict `CORS_ORIGINS`, enable HTTPS, configure email/SMS provider credentials and approved sender identities, use secure file storage, and add a production rate-limit/reverse-proxy layer before exposing the API publicly. The local deterministic advisor is deliberately used when no external AI credential is configured.
+Set a long random `SECRET_KEY`, replace the shared development ingestion key with per-device keys, configure PostgreSQL, restrict `CORS_ORIGINS`, enable HTTPS, configure email/SMS provider credentials and approved sender identities, use secure file storage, and add a production rate-limit/reverse-proxy layer before exposing the API publicly. For a fresh production database, set `BOOTSTRAP_ADMIN_EMAIL` to the first administrator's registered email before sign-up. The local deterministic advisor is deliberately used when no external AI credential is configured.
 

@@ -31,7 +31,7 @@ The UI describes predictions as four-parameter sensor-based screening. It does n
 
 ## Prototype account and location flow
 
-- Users must sign up or sign in before entering the workspace. The first account is assigned `admin`; every later account is assigned `user`, so nobody is asked to choose a role.
+- Users must sign up or sign in before entering the workspace. Development assigns the first account `admin`. Production requires `BOOTSTRAP_ADMIN_EMAIL` to match the initial administrator account; later registrations are standard users.
 - The map is a Leaflet map with street, satellite, and terrain tile layers. Users can select a precise point or two-corner area, search a city/address manually, request browser geolocation, and see country, state, district, and city/town fields for a selected place.
 - Search uses OpenStreetMap Nominatim only after the user submits a place query. Reverse-geocoding a precise map-selected coordinate is an explicit `Identify area` action rather than an automatic background request.
 - The browser requests live location through `navigator.geolocation`, watches for updates, and uses the current coordinates as the test site.
@@ -55,7 +55,7 @@ Open `http://127.0.0.1:8000/docs` for the OpenAPI contract. The API includes pro
 
 ## Account, reminders and submissions
 
-- New registration collects full name, email, international mobile number, password confirmation, and optional weekly-reminder consent. The first backend account is an administrator; later accounts are standard users.
+- New registration collects full name, email, international mobile number, password confirmation, and optional weekly-reminder consent. Configure `BOOTSTRAP_ADMIN_EMAIL` in production before creating the first account; it is only used while no active administrator exists.
 - Email and mobile verification endpoints are available at `/api/verification/request` and `/api/verification/confirm`. Development mode returns a short-lived code for testing and explicitly does not claim that a message was delivered.
 - `Submit monitoring data` stores groundwater or water-quality values as a versioned `SubmissionBatch`. Draft, Submitted, Under Review, Approved, Rejected, and Correction Requested states are persisted. Original values remain unchanged, validation warnings are stored, and attachments are size/type validated.
 - `My submissions` only queries the signed-in user's records. The administrator-only Data Management page reads `/api/admin/stats` and `/api/admin/submissions`, and backend review routes enforce approval permissions.

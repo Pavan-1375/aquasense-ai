@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     app_base_url: str = "http://127.0.0.1:5173"
     cors_origins: str = "http://127.0.0.1:5173,http://localhost:5173"
     device_ingest_key: str = "local-device-key"
+    bootstrap_admin_email: str = ""
     seed_demo: bool = False
     scheduler_enabled: bool = True
     scheduler_interval_seconds: int = 60

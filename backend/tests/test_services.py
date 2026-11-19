@@ -1,5 +1,8 @@
 import unittest
 from datetime import datetime
+from io import BytesIO
+
+from PIL import Image
 
 from app.models import ReminderSchedule
 from app.schemas import UserCreate
@@ -7,6 +10,7 @@ from app.services.forecast import fallback_forecast
 from app.services.quality import calculate_wqi
 from app.services.reminders import next_occurrence
 from app.services.rate_limit import InMemoryRateLimiter
+from app.services.uploads import sanitize_image_upload
 
 
 class ServiceTests(unittest.TestCase):
@@ -38,6 +42,30 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(limiter.allow("test", 2, 60))
         self.assertTrue(limiter.allow("test", 2, 60))
         self.assertFalse(limiter.allow("test", 2, 60))
+
+    def test_image_upload_reencoding_strips_exif_and_normalizes_extension(self) -> None:
+        source = Image.new("RGBA", (8, 6), (20, 80, 120, 128))
+        exif = Image.Exif()
+        exif[305] = "private camera metadata"
+        encoded = BytesIO()
+        source.save(encoded, format="PNG", exif=exif)
+
+        sanitized, suffix = sanitize_image_upload(encoded.getvalue(), ".webp")
+        with Image.open(BytesIO(sanitized)) as result:
+            self.assertEqual(suffix, ".jpg")
+            self.assertEqual(result.format, "JPEG")
+            self.assertEqual(result.size, (8, 6))
+            self.assertEqual(dict(result.getexif()), {})
+
+    def test_png_upload_preserves_alpha_and_strips_metadata(self) -> None:
+        source = Image.new("RGBA", (3, 4), (10, 20, 30, 40))
+        encoded = BytesIO()
+        source.save(encoded, format="PNG")
+        sanitized, suffix = sanitize_image_upload(encoded.getvalue(), ".png")
+        with Image.open(BytesIO(sanitized)) as result:
+            self.assertEqual(suffix, ".png")
+            self.assertEqual(result.mode, "RGBA")
+            self.assertEqual(result.getpixel((0, 0)), (10, 20, 30, 40))
 
 
 if __name__ == "__main__":

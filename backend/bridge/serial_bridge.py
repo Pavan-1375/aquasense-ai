@@ -28,10 +28,15 @@ def parse_message(raw: str) -> dict:
     # The ESP32 firmware uses its monotonic millis counter because it has no
     # network clock. Stamp it at bridge receipt while preserving all sensor
     # values exactly as emitted by the OLED packet.
-    if isinstance(payload["timestamp"], (int, float)):
+    timestamp = payload["timestamp"]
+    # The bundled ESP32 firmware prints millis() inside quotes, so its JSON
+    # timestamp is a numeric string (for example "12345"), not an ISO date.
+    if isinstance(timestamp, (int, float)) or (
+        isinstance(timestamp, str) and re.fullmatch(r"\d+(?:\.\d+)?", timestamp.strip())
+    ):
         payload["timestamp"] = datetime.now(timezone.utc).isoformat()
     else:
-        datetime.fromisoformat(str(payload["timestamp"]).replace("Z", "+00:00"))
+        datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
     if all(payload.get(key) is None for key in ("distance_cm", "water_level_percent", "water_depth_cm")):
         raise ValueError("at least one groundwater measurement is required")
     return payload
@@ -92,7 +97,7 @@ def main() -> int:
     parser.add_argument("--endpoint", default="http://127.0.0.1:8000/api/ingest/http")
     parser.add_argument("--device-key", required=True, help="Device ingest key; never use a hardcoded production key")
     parser.add_argument("--device-id", default="ESP32-001")
-    parser.add_argument("--min-interval", type=float, default=0.25, help="Minimum seconds between forwarded readings (250ms default)")
+    parser.add_argument("--min-interval", type=float, default=1.0, help="Minimum seconds between forwarded readings (default matches the ESP32's 1 second update)")
     args = parser.parse_args()
     try:
         import serial
@@ -109,16 +114,6 @@ def main() -> int:
         while True:
             raw = port.readline().decode("utf-8", errors="replace").strip()
             if not raw:
-                if pending_payload and time.monotonic() - last_forwarded_at >= args.min_interval:
-                    try:
-                        print(forward(args.endpoint, args.device_key, pending_payload))
-                        last_forwarded_at = time.monotonic()
-                        pending_payload = None
-                    except Exception as error:
-                        if time.monotonic() - last_error_at >= 10:
-                            print(f"network unavailable; keeping latest OLED reading and retrying: {error}", file=sys.stderr)
-                            last_error_at = time.monotonic()
-                        time.sleep(1)
                 continue
             try:
                 try:
@@ -141,7 +136,31 @@ def main() -> int:
                     if time.monotonic() - last_error_at >= 10:
                         print(f"network unavailable; keeping latest OLED reading and retrying: {error}", file=sys.stderr)
                         last_error_at = time.monotonic()
-                    time.sleep(1)
+                    # Keep reading serial while offline so the retained packet
+                    # always represents the newest OLED state, not stale data.
+                    while True:
+                        port.timeout = 0.05
+                        newer = port.readline().decode("utf-8", errors="replace").strip()
+                        if newer:
+                            try:
+                                replacement = parse_message(newer)
+                                pending_payload = replacement
+                            except (json.JSONDecodeError, ValueError):
+                                replacement = legacy_parser.parse(newer)
+                                if replacement:
+                                    pending_payload = replacement
+                        if time.monotonic() - last_forwarded_at >= args.min_interval:
+                            try:
+                                print(forward(args.endpoint, args.device_key, pending_payload))
+                                last_forwarded_at = time.monotonic()
+                                pending_payload = None
+                                port.timeout = 1
+                                break
+                            except Exception as retry_error:
+                                if time.monotonic() - last_error_at >= 10:
+                                    print(f"network unavailable; retaining latest OLED reading: {retry_error}", file=sys.stderr)
+                                    last_error_at = time.monotonic()
+                                time.sleep(1)
             except Exception as error:
                 print(f"bridge rejected line: {error}", file=sys.stderr)
 

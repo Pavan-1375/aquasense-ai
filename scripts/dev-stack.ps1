@@ -29,13 +29,28 @@ function Wait-ForHealth([string]$Name, [string]$Url, [int]$TimeoutSeconds = 45) 
   throw "$Name did not become healthy within $TimeoutSeconds seconds: $Url"
 }
 
-if (-not (Get-Command py -ErrorAction SilentlyContinue)) {
-  throw 'Python launcher (py) was not found. Install Python 3.11+ and enable the py launcher.'
-}
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
   throw 'npm was not found. Install Node.js 18+.'
 }
-$pythonExecutable = (py -3 -c "import sys; print(sys.executable)").Trim()
+$pythonExecutable = $null
+if (Get-Command py -ErrorAction SilentlyContinue) {
+  try {
+    $candidate = (& py -3 -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -eq 0 -and $candidate) { $pythonExecutable = $candidate }
+  } catch {
+    # Some Windows installs expose py.exe as an App Execution Alias that cannot
+    # be launched; use the regular Python command below in that case.
+  }
+}
+if (-not $pythonExecutable -and (Get-Command python -ErrorAction SilentlyContinue)) {
+  try {
+    $candidate = (& python -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -eq 0 -and $candidate) { $pythonExecutable = $candidate }
+  } catch {
+    throw 'Python could not be launched. Install Python 3.11+ and ensure python.exe is on PATH.'
+  }
+}
+if (-not $pythonExecutable) { throw 'Python 3.11+ was not found. Install Python and enable python.exe or the py launcher.' }
 if (-not (Test-Path $pythonExecutable)) { throw "Could not resolve Python executable: $pythonExecutable" }
 
 $backend = $null

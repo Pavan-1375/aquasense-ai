@@ -308,7 +308,7 @@ class SubmissionReview(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     submission_id: Mapped[str] = mapped_column(ForeignKey("submission_batches.id"), index=True)
-    reviewer_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    reviewer_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     from_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
     to_status: Mapped[str] = mapped_column(String(30))
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)

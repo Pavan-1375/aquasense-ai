@@ -147,6 +147,10 @@ class LocationSyncIn(BaseModel):
     district: str | None = Field(default=None, max_length=120)
 
 
+class AccountRoleUpdate(BaseModel):
+    role: Literal["admin", "user"]
+
+
 class VerificationRequest(BaseModel):
     channel: Literal["email", "mobile"]
 
@@ -204,6 +208,14 @@ class DeviceOut(BaseModel):
     status: str
     last_seen_at: datetime | None
     created_at: datetime
+
+
+class DeviceUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=160)
+    device_type: str | None = Field(default=None, min_length=2, max_length=60)
+    station_id: str | None = None
+    status: Literal["online", "offline", "maintenance"] | None = None
+    calibration_json: str | None = Field(default=None, max_length=10000)
 
 
 class MeasurementIn(BaseModel):

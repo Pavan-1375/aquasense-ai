@@ -7,7 +7,7 @@ from pathlib import Path
 import secrets
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Cookie, Depends, File, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from fastapi import Response
 from sqlalchemy import desc, text
@@ -42,10 +42,12 @@ from ..schemas import (
     AdvisorResponse,
     AlertOut,
     AlertStateUpdate,
+    AccountRoleUpdate,
     AuthResponse,
     DashboardResponse,
     DeviceCreate,
     DeviceOut,
+    DeviceUpdate,
     ForgotPassword,
     GroundwaterSubmission,
     MeasurementIn,
@@ -76,6 +78,7 @@ from ..security import get_current_user, hash_password, issue_token, require_adm
 from ..services.forecast import fallback_forecast
 from ..services.ingestion import save_measurement, save_measurement_with_key
 from ..services.quality import calculate_wqi
+from ..services.uploads import sanitize_image_upload
 from ml.quality_inference import predict_quality
 from ..services.reminders import ensure_schedule, next_occurrence, run_reminder_cycle
 from ..services.recovery_delivery import send_reset_email, send_reset_sms
@@ -101,7 +104,8 @@ class SocketManager:
     async def broadcast(self, payload: dict) -> None:
         owner_id = payload.get("measurement", {}).get("owner_id")
         for websocket, user_id in list(self.connections):
-            if owner_id and user_id != owner_id:
+            role = getattr(websocket.state, "aquasense_role", "user")
+            if role != "admin" and (not owner_id or user_id != owner_id):
                 continue
             try:
                 await websocket.send_json(payload)
@@ -237,7 +241,15 @@ def signup(payload: UserCreate, response: Response, db: Session = Depends(get_db
         raise HTTPException(status_code=409, detail="An account with this email already exists")
     if db.query(UserContact).filter(UserContact.mobile_e164 == payload.mobile_number).first():
         raise HTTPException(status_code=409, detail="An account with this mobile number already exists")
-    role = "admin" if db.query(User).count() == 0 else "user"
+    has_active_admin = db.query(User).filter(User.role == "admin", User.is_active.is_(True)).first() is not None
+    bootstrap_email = settings.bootstrap_admin_email.strip().lower()
+    if settings.app_env.lower() == "production" and not has_active_admin:
+        if not bootstrap_email:
+            raise HTTPException(status_code=503, detail="Initial administrator email is not configured. Set BOOTSTRAP_ADMIN_EMAIL before account creation.")
+        if payload.email != bootstrap_email:
+            raise HTTPException(status_code=403, detail="The initial production account must use the configured administrator email")
+    bootstrap_admin = not has_active_admin and (settings.app_env.lower() != "production" or payload.email == bootstrap_email)
+    role = "admin" if bootstrap_admin else "user"
     user = User(name=payload.name.strip(), email=payload.email, password_hash=hash_password(payload.password), role=role)
     db.add(user)
     db.flush()
@@ -354,11 +366,9 @@ def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)) ->
 
 
 @router.post("/auth/logout")
-def logout(response: Response, authorization: Annotated[str | None, Header()] = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
-    token = authorization.split(" ", 1)[1].strip() if authorization and " " in authorization else ""
+def logout(response: Response, authorization: Annotated[str | None, Header()] = None, session_cookie: Annotated[str | None, Cookie(alias="aquasense_session")] = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    token = authorization.split(" ", 1)[1].strip() if authorization and authorization.lower().startswith("bearer ") else session_cookie
     if token:
-        from ..models import SessionToken
-
         session = db.get(SessionToken, token)
         if session:
             db.delete(session)
@@ -387,6 +397,46 @@ def update_profile(payload: ProfileUpdate, db: Session = Depends(get_db), user: 
     db.commit()
     db.refresh(user)
     return as_user(user, contact)
+
+
+@router.delete("/account")
+def delete_account(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    # Preserve audit history but remove the account and its directly owned data.
+    if user.role == "admin" and db.query(User).filter(User.role == "admin", User.id != user.id, User.is_active.is_(True)).count() == 0:
+        raise HTTPException(status_code=409, detail="Promote another active administrator before deleting the last administrator account")
+    owned_submissions = db.query(SubmissionBatch).filter(SubmissionBatch.user_id == user.id).all()
+    submission_ids = [item.id for item in owned_submissions]
+    if submission_ids:
+        db.query(ModelExecutionRecord).filter(ModelExecutionRecord.submission_id.in_(submission_ids)).delete(synchronize_session=False)
+        db.query(SubmissionReview).filter(SubmissionReview.submission_id.in_(submission_ids)).delete(synchronize_session=False)
+        db.query(DataQualityResult).filter(DataQualityResult.submission_id.in_(submission_ids)).delete(synchronize_session=False)
+        attachments = db.query(SubmissionAttachment).filter(SubmissionAttachment.submission_id.in_(submission_ids)).all()
+        for attachment in attachments:
+            try:
+                Path(attachment.storage_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+        db.query(SubmissionAttachment).filter(SubmissionAttachment.submission_id.in_(submission_ids)).delete(synchronize_session=False)
+        db.query(SubmissionBatch).filter(SubmissionBatch.id.in_(submission_ids)).delete(synchronize_session=False)
+    # Preserve review history while detaching personal identifiers.
+    db.query(SubmissionReview).filter(SubmissionReview.reviewer_id == user.id).update({SubmissionReview.reviewer_id: None}, synchronize_session=False)
+    db.query(SubmissionBatch).filter(SubmissionBatch.reviewed_by == user.id).update({SubmissionBatch.reviewed_by: None}, synchronize_session=False)
+    db.query(Measurement).filter(Measurement.owner_id == user.id).delete(synchronize_session=False)
+    db.query(QualityObservation).filter(QualityObservation.owner_id == user.id).delete(synchronize_session=False)
+    db.query(Alert).filter(Alert.owner_id == user.id).delete(synchronize_session=False)
+    db.query(ReminderSchedule).filter(ReminderSchedule.user_id == user.id).delete(synchronize_session=False)
+    db.query(NotificationDelivery).filter(NotificationDelivery.user_id == user.id).delete(synchronize_session=False)
+    db.query(VerificationCode).filter(VerificationCode.user_id == user.id).delete(synchronize_session=False)
+    db.query(PasswordRecoveryCode).filter(PasswordRecoveryCode.user_id == user.id).delete(synchronize_session=False)
+    db.query(PasswordResetToken).filter(PasswordResetToken.user_id == user.id).delete(synchronize_session=False)
+    db.query(SessionToken).filter(SessionToken.user_id == user.id).delete(synchronize_session=False)
+    db.query(UserContact).filter(UserContact.user_id == user.id).delete(synchronize_session=False)
+    db.query(Station).filter(Station.owner_id == user.id).update({Station.owner_id: None}, synchronize_session=False)
+    db.query(AuditEvent).filter(AuditEvent.user_id == user.id).update({AuditEvent.user_id: None}, synchronize_session=False)
+    user_id = user.id
+    db.delete(user)
+    db.commit()
+    return {"status": "deleted", "user_id": user_id}
 
 
 @router.post("/verification/request")
@@ -641,15 +691,7 @@ async def upload_submission_attachment(submission_id: str, file: UploadFile = Fi
         raise HTTPException(status_code=422, detail="Unsupported attachment extension")
     if safe_suffix in {".jpg", ".jpeg", ".png", ".webp"}:
         try:
-            from PIL import Image
-            image = Image.open(io.BytesIO(content))
-            image.load()
-            cleaned = Image.new(image.mode, image.size)
-            cleaned.putdata(list(image.getdata()))
-            buffer = io.BytesIO()
-            cleaned.save(buffer, format="PNG" if safe_suffix == ".png" else "JPEG", optimize=True)
-            content = buffer.getvalue()
-            safe_suffix = ".png" if safe_suffix == ".png" else ".jpg"
+            content, safe_suffix = sanitize_image_upload(content, safe_suffix)
         except Exception as error:
             raise HTTPException(status_code=422, detail="Image could not be decoded and sanitized") from error
     signatures = {".pdf": b"%PDF", ".png": b"\x89PNG\r\n\x1a\n", ".jpg": b"\xff\xd8\xff", ".jpeg": b"\xff\xd8\xff", ".webp": b"RIFF"}
@@ -718,6 +760,27 @@ def admin_stats(db: Session = Depends(get_db), admin: User = Depends(require_adm
     )
 
 
+@router.get("/admin/users", response_model=list[UserOut])
+def admin_users(limit: int = Query(default=200, ge=1, le=500), db: Session = Depends(get_db), admin: User = Depends(require_admin)) -> list[UserOut]:
+    users = db.query(User).order_by(User.created_at.asc()).limit(limit).all()
+    contacts = {contact.user_id: contact for contact in db.query(UserContact).filter(UserContact.user_id.in_([user.id for user in users])).all()}
+    return [as_user(user, contacts.get(user.id)) for user in users]
+
+
+@router.patch("/admin/users/{user_id}/role", response_model=UserOut)
+def update_user_role(user_id: str, payload: AccountRoleUpdate, db: Session = Depends(get_db), admin: User = Depends(require_admin)) -> UserOut:
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.id == admin.id and payload.role != "admin":
+        raise HTTPException(status_code=409, detail="You cannot remove your own administrator role")
+    target.role = payload.role
+    db.add(AuditEvent(user_id=admin.id, event_type="user.role_changed", detail=json.dumps({"target_user_id": target.id, "role": payload.role})))
+    db.commit()
+    db.refresh(target)
+    return as_user(target, db.query(UserContact).filter(UserContact.user_id == target.id).first())
+
+
 @router.get("/admin/notifications", response_model=list[NotificationDeliveryOut])
 def admin_notifications(limit: int = Query(default=100, ge=1, le=500), db: Session = Depends(get_db), admin: User = Depends(require_admin)) -> list[NotificationDelivery]:
     return db.query(NotificationDelivery).order_by(NotificationDelivery.scheduled_at.desc()).limit(limit).all()
@@ -741,9 +804,46 @@ def create_station(payload: StationCreate, db: Session = Depends(get_db), user: 
     return station
 
 
+@router.patch("/stations/{station_id}", response_model=StationOut)
+def update_station(station_id: str, payload: StationCreate, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> Station:
+    station = db.get(Station, station_id)
+    if not station:
+        raise HTTPException(status_code=404, detail="Monitoring station not found")
+    for key, value in payload.model_dump().items():
+        setattr(station, key, value)
+    db.add(AuditEvent(user_id=user.id, event_type="station.updated", detail=station.name))
+    db.commit()
+    db.refresh(station)
+    return station
+
+
+@router.delete("/stations/{station_id}")
+def delete_station(station_id: str, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    station = db.get(Station, station_id)
+    if not station:
+        raise HTTPException(status_code=404, detail="Monitoring station not found")
+    if db.query(Measurement).filter(Measurement.station_id == station_id).first() or db.query(SubmissionBatch).filter(SubmissionBatch.station_id == station_id).first():
+        raise HTTPException(status_code=409, detail="Station has stored readings or submissions and cannot be deleted")
+    db.add(AuditEvent(user_id=user.id, event_type="station.deleted", detail=station.name))
+    db.delete(station)
+    db.commit()
+    return {"status": "deleted", "station_id": station_id}
+
+
 @router.get("/devices", response_model=list[DeviceOut])
-def list_devices(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[Device]:
-    return db.query(Device).order_by(Device.created_at.desc()).all()
+def list_devices(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[DeviceOut]:
+    query = db.query(Device)
+    if user.role != "admin":
+        query = query.join(Station, Device.station_id == Station.id).filter(Station.owner_id == user.id)
+    now = utc_now()
+    devices = query.order_by(Device.created_at.desc()).all()
+    result: list[DeviceOut] = []
+    for device in devices:
+        status = device.status
+        if status == "online" and (not device.last_seen_at or device.last_seen_at < now - timedelta(seconds=10)):
+            status = "offline"
+        result.append(DeviceOut.model_validate(device).model_copy(update={"status": status}))
+    return result
 
 
 @router.post("/devices", response_model=DeviceOut, status_code=201)
@@ -752,12 +852,43 @@ def create_device(payload: DeviceCreate, db: Session = Depends(get_db), user: Us
         raise HTTPException(status_code=409, detail="Device identifier already registered")
     if not payload.ingest_key:
         raise HTTPException(status_code=422, detail="A unique device ingestion key is required")
+    if payload.station_id and not db.get(Station, payload.station_id):
+        raise HTTPException(status_code=404, detail="Monitoring station not found")
     device = Device(device_id=payload.device_id, name=payload.name, device_type=payload.device_type, station_id=payload.station_id, ingest_key=payload.ingest_key)
     db.add(device)
     db.add(AuditEvent(user_id=user.id, event_type="device.created", detail=device.device_id))
     db.commit()
     db.refresh(device)
     return device
+
+
+@router.patch("/devices/{device_id}", response_model=DeviceOut)
+def update_device(device_id: str, payload: DeviceUpdate, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> Device:
+    device = db.query(Device).filter(Device.device_id == device_id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    values = payload.model_dump(exclude_unset=True)
+    if values.get("station_id") and not db.get(Station, values["station_id"]):
+        raise HTTPException(status_code=404, detail="Monitoring station not found")
+    for key, value in values.items():
+        setattr(device, key, value)
+    db.add(AuditEvent(user_id=user.id, event_type="device.updated", detail=json.dumps({"device_id": device_id, "fields": list(values)})))
+    db.commit()
+    db.refresh(device)
+    return device
+
+
+@router.delete("/devices/{device_id}")
+def delete_device(device_id: str, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    device = db.query(Device).filter(Device.device_id == device_id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    if db.query(Measurement).filter(Measurement.device_id == device_id).first():
+        raise HTTPException(status_code=409, detail="Device has measurement history; mark it offline instead of deleting it")
+    db.add(AuditEvent(user_id=user.id, event_type="device.deleted", detail=device_id))
+    db.delete(device)
+    db.commit()
+    return {"status": "deleted", "device_id": device_id}
 
 
 @router.post("/ingest/http", response_model=MeasurementOut, status_code=201)
@@ -773,6 +904,8 @@ async def ingest_http(payload: MeasurementIn, x_device_key: Annotated[str | None
     if not allowed:
         raise HTTPException(status_code=401, detail="Valid device ingestion key required")
     measurement = save_measurement_with_key(db, payload, source="http", idempotency_key=x_idempotency_key)
+    # Ownerless pending packets are delivered only to admin WebSocket clients;
+    # owner-scoped packets remain restricted to that owner and admins.
     await socket_manager.broadcast({"event": "measurement.created", "measurement": MeasurementOut.model_validate(measurement).model_dump(mode="json")})
     return measurement
 
@@ -801,22 +934,52 @@ def list_measurements(station_id: str | None = None, status: str | None = None, 
     query = db.query(Measurement)
     if user.role != "admin":
         query = query.filter(Measurement.owner_id == user.id)
+        # Owners may inspect their own pending submissions in Live Monitoring,
+        # while the normal history endpoint continues to expose approved data.
+        query = query.filter(Measurement.quality_status == (status or "reviewed"))
+    elif status:
+        query = query.filter(Measurement.quality_status == status)
+    else:
+        query = query.filter(Measurement.quality_status == "reviewed")
     if station_id:
         query = query.filter(Measurement.station_id == station_id)
-    if status:
-        query = query.filter(Measurement.quality_status == status)
     return query.order_by(desc(Measurement.timestamp)).limit(limit).all()
 
 
-@router.get("/measurements/live-preview", response_model=list[MeasurementOut])
-def live_measurements_preview(limit: int = Query(default=20, ge=1, le=100), db: Session = Depends(get_db)) -> list[Measurement]:
-    """Development-only bridge visibility for the local preview session.
+def _latest_measurement_per_device(rows: list[Measurement], limit: int) -> list[Measurement]:
+    latest: list[Measurement] = []
+    seen: set[str] = set()
+    for row in rows:
+        if row.device_id in seen:
+            continue
+        seen.add(row.device_id)
+        latest.append(row)
+        if len(latest) >= limit:
+            break
+    return latest
 
-    Production clients must use the authenticated /api/measurements route.
-    """
-    if settings.app_env != "development":
-        raise HTTPException(status_code=404, detail="Live preview is disabled outside development")
-    return db.query(Measurement).filter(Measurement.source == "http").order_by(desc(Measurement.timestamp)).limit(limit).all()
+
+@router.get("/measurements/live", response_model=list[MeasurementOut])
+def live_measurements(limit: int = Query(default=20, ge=1, le=100), db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[Measurement]:
+    """Recent device packets only; this endpoint drives online/offline state."""
+    query = db.query(Measurement).filter(
+        Measurement.source == "http",
+        Measurement.quality_status == "pending_review",
+        Measurement.created_at >= utc_now() - timedelta(seconds=10),
+    )
+    if user.role != "admin":
+        query = query.filter(Measurement.owner_id == user.id)
+    recent = query.order_by(desc(Measurement.created_at)).limit(2000).all()
+    return _latest_measurement_per_device(recent, limit)
+
+
+@router.get("/measurements/live-preview", response_model=list[MeasurementOut])
+def live_measurements_preview(limit: int = Query(default=20, ge=1, le=100), db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[Measurement]:
+    """Compatibility alias for the authenticated live-reading list."""
+    query = db.query(Measurement).filter(Measurement.source == "http")
+    if user.role != "admin":
+        query = query.filter(Measurement.owner_id == user.id)
+    return query.order_by(desc(Measurement.timestamp)).limit(limit).all()
 
 
 @router.get("/admin/measurements", response_model=list[MeasurementOut])
@@ -824,15 +987,18 @@ def admin_measurements(status: str = "pending_review", limit: int = Query(defaul
     return db.query(Measurement).filter(Measurement.quality_status == status).order_by(desc(Measurement.timestamp)).limit(limit).all()
 
 
-@router.get("/admin/measurements/live-preview", response_model=list[MeasurementOut])
-def admin_measurements_preview(status: str = "pending_review", limit: int = Query(default=40, ge=1, le=100), db: Session = Depends(get_db)) -> list[Measurement]:
-    if settings.app_env != "development":
-        raise HTTPException(status_code=404, detail="Admin preview is disabled outside development")
-    return db.query(Measurement).filter(Measurement.quality_status == status).order_by(desc(Measurement.timestamp)).limit(limit).all()
+@router.get("/admin/measurements/live", response_model=list[MeasurementOut])
+def admin_live_measurements(limit: int = Query(default=20, ge=1, le=100), db: Session = Depends(get_db), admin: User = Depends(require_admin)) -> list[Measurement]:
+    recent = db.query(Measurement).filter(
+        Measurement.source == "http",
+        Measurement.quality_status == "pending_review",
+        Measurement.created_at >= utc_now() - timedelta(seconds=10),
+    ).order_by(desc(Measurement.created_at)).limit(2000).all()
+    return _latest_measurement_per_device(recent, limit)
 
 
 @router.post("/admin/measurements/{measurement_id}/review", response_model=MeasurementOut)
-def review_measurement(measurement_id: str, payload: SubmissionReviewIn, db: Session = Depends(get_db), admin: User = Depends(require_admin)) -> Measurement:
+async def review_measurement(measurement_id: str, payload: SubmissionReviewIn, db: Session = Depends(get_db), admin: User = Depends(require_admin)) -> Measurement:
     if payload.status not in {"Approved", "Rejected"}:
         raise HTTPException(status_code=422, detail="Live readings can only be approved or rejected")
     measurement = db.get(Measurement, measurement_id)
@@ -848,26 +1014,7 @@ def review_measurement(measurement_id: str, payload: SubmissionReviewIn, db: Ses
     db.add(AuditEvent(user_id=admin.id, event_type="measurement.reviewed", detail=json.dumps({"measurement_id": measurement.id, "status": payload.status, "reason": payload.reason})))
     db.commit()
     db.refresh(measurement)
-    return measurement
-
-
-@router.post("/admin/measurements/live-preview/{measurement_id}/review", response_model=MeasurementOut)
-def review_measurement_preview(measurement_id: str, payload: SubmissionReviewIn, db: Session = Depends(get_db), admin: User = Depends(require_admin)) -> Measurement:
-    if settings.app_env != "development":
-        raise HTTPException(status_code=404, detail="Admin preview is disabled outside development")
-    measurement = db.get(Measurement, measurement_id)
-    if not measurement:
-        raise HTTPException(status_code=404, detail="Measurement not found")
-    if payload.status not in {"Approved", "Rejected"}:
-        raise HTTPException(status_code=422, detail="Live readings can only be approved or rejected")
-    measurement.quality_status = "reviewed" if payload.status == "Approved" else "rejected"
-    pending_title = f"Device review required · {measurement.device_id}"
-    for alert in db.query(Alert).filter(Alert.title == pending_title, Alert.state == "active").all():
-        alert.state = "resolved"
-        alert.resolved_at = utc_now()
-    db.add(Alert(station_id=measurement.station_id, severity="info", title=f"Device reading {payload.status.lower()} · {measurement.device_id}", detail=f"Measurement {measurement.id} was {payload.status.lower()} in development preview."))
-    db.commit()
-    db.refresh(measurement)
+    await socket_manager.broadcast({"event": "measurement.reviewed", "measurement": MeasurementOut.model_validate(measurement).model_dump(mode="json")})
     return measurement
 
 
@@ -953,10 +1100,12 @@ def list_alerts(state: str | None = None, db: Session = Depends(get_db), user: U
 
 
 @router.get("/alerts/live-preview", response_model=list[AlertOut])
-def live_alerts_preview(db: Session = Depends(get_db)) -> list[Alert]:
-    if settings.app_env != "development":
-        raise HTTPException(status_code=404, detail="Alert preview is disabled outside development")
-    return db.query(Alert).filter(Alert.state != "resolved").order_by(desc(Alert.created_at)).limit(100).all()
+def live_alerts_preview(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[Alert]:
+    # Retain this route for existing clients, but scope it exactly like /alerts.
+    query = db.query(Alert).filter(Alert.state != "resolved")
+    if user.role != "admin":
+        query = query.filter(Alert.owner_id == user.id)
+    return query.order_by(desc(Alert.created_at)).limit(100).all()
 
 
 @router.patch("/alerts/{alert_id}", response_model=AlertOut)
@@ -982,12 +1131,24 @@ def advisor(payload: AdvisorRequest, db: Session = Depends(get_db), user: User =
     quality = db.query(QualityObservation).order_by(desc(QualityObservation.measured_at)).first()
     active = db.query(Alert).filter(Alert.state != "resolved").count()
     if "wqi" in question or "quality" in question:
-        answer = f"The latest available quality screening is {quality.classification or 'not classified'} with WQI {quality.wqi if quality and quality.wqi is not None else 'unavailable'}. This is a screening result, not a potability certificate." if quality else "No water-quality observation is stored yet. Add a manual or laboratory observation to calculate WQI."
+        quality_query = db.query(QualityObservation).filter(QualityObservation.data_quality != "pending_review")
+        if user.role != "admin":
+            quality_query = quality_query.filter(QualityObservation.owner_id == user.id)
+        quality = quality_query.order_by(desc(QualityObservation.measured_at)).first()
+        answer = f"The latest available quality screening is {quality.classification or 'not classified'} with WQI {quality.wqi if quality.wqi is not None else 'unavailable'}. This is a screening result, not a potability certificate." if quality else "No approved water-quality observation is available yet. Add or approve an observation to calculate the screening score."
         links = ["/quality", "/reports"]
     elif "alert" in question:
+        alert_query = db.query(Alert).filter(Alert.state != "resolved")
+        if user.role != "admin":
+            alert_query = alert_query.filter(Alert.owner_id == user.id)
+        active = alert_query.count()
         answer = f"There are {active} unresolved alerts. Review their severity, evidence and station before taking action." 
         links = ["/alerts"]
     elif "level" in question or "groundwater" in question or "fall" in question:
+        measurement_query = db.query(Measurement).filter(Measurement.quality_status == "reviewed")
+        if user.role != "admin":
+            measurement_query = measurement_query.filter(Measurement.owner_id == user.id)
+        latest = measurement_query.order_by(desc(Measurement.timestamp)).first()
         answer = f"The latest stored groundwater reading is {latest.water_level_percent if latest and latest.water_level_percent is not None else 'unavailable'}% level. Forecasts use the transparent fallback unless a trained artifact is configured." if latest else "No groundwater readings are stored yet. Register a device or import a dataset."
         links = ["/groundwater", "/history"]
     elif "conserve" in question:
@@ -1002,6 +1163,8 @@ def advisor(payload: AdvisorRequest, db: Session = Depends(get_db), user: User =
 @router.get("/reports/measurements.csv")
 def measurements_csv(station_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> StreamingResponse:
     query = db.query(Measurement)
+    if user.role != "admin":
+        query = query.filter(Measurement.owner_id == user.id)
     if station_id:
         query = query.filter(Measurement.station_id == station_id)
     rows = query.order_by(Measurement.timestamp.asc()).all()
@@ -1022,12 +1185,42 @@ def summary_pdf(db: Session = Depends(get_db), user: User = Depends(get_current_
         raise HTTPException(status_code=503, detail="PDF export requires reportlab; install backend requirements") from error
     stream = io.BytesIO()
     document = canvas.Canvas(stream, pagesize=A4)
-    document.setTitle("HydroInsight monitoring summary")
-    document.drawString(50, 800, "HydroInsight monitoring summary")
+    measurement_query = db.query(Measurement)
+    quality_query = db.query(QualityObservation)
+    station_query = db.query(Station)
+    device_query = db.query(Device)
+    if user.role != "admin":
+        measurement_query = measurement_query.filter(Measurement.owner_id == user.id)
+        quality_query = quality_query.filter(QualityObservation.owner_id == user.id)
+        station_query = station_query.filter(Station.owner_id == user.id)
+        device_query = device_query.outerjoin(Station, Device.station_id == Station.id).filter((Station.owner_id == user.id) | (Device.station_id.is_(None)))
+    measurements = measurement_query.filter(Measurement.quality_status == "reviewed").order_by(Measurement.timestamp.desc()).limit(500).all()
+    quality_rows = quality_query.order_by(QualityObservation.measured_at.desc()).limit(10).all()
+    document.setTitle("AquaSense AI monitoring summary")
+    document.drawString(50, 800, "AquaSense AI monitoring summary")
     document.drawString(50, 780, f"Generated: {datetime.now(timezone.utc).isoformat()}")
-    document.drawString(50, 750, f"Stations: {db.query(Station).count()}   Devices: {db.query(Device).count()}   Measurements: {db.query(Measurement).count()}")
+    document.drawString(50, 750, f"Stations: {station_query.count()}   Devices: {device_query.count()}   Approved measurements: {len(measurements)}")
     document.drawString(50, 720, "Forecast model: transparent-fallback (not a trained model output)")
     document.drawString(50, 700, "Quality limitation: measured inputs do not certify potability or detect all contaminants.")
+    y = 670
+    document.drawString(50, y, "Latest approved readings (device | timestamp | distance cm | level %)")
+    for row in measurements[:25]:
+        y -= 18
+        if y < 55:
+            document.showPage()
+            y = 800
+        document.drawString(50, y, f"{row.device_id} | {row.timestamp.isoformat()} | {row.distance_cm if row.distance_cm is not None else '—'} | {row.water_level_percent if row.water_level_percent is not None else '—'}")
+    y -= 28
+    if y < 80:
+        document.showPage()
+        y = 800
+    document.drawString(50, y, "Recent water quality screening")
+    for row in quality_rows:
+        y -= 18
+        if y < 55:
+            document.showPage()
+            y = 800
+        document.drawString(50, y, f"{row.measured_at.isoformat()} | pH {row.ph} | TDS {row.tds_mg_l} mg/L | turbidity {row.turbidity_ntu} NTU | {row.classification or 'unclassified'}")
     document.save()
     stream.seek(0)
     return StreamingResponse(stream, media_type="application/pdf", headers={"Content-Disposition": "attachment; filename=hydroinsight-summary.pdf"})
@@ -1035,7 +1228,8 @@ def summary_pdf(db: Session = Depends(get_db), user: User = Depends(get_current_
 
 @router.websocket("/ws/measurements")
 async def measurements_socket(websocket: WebSocket) -> None:
-    token = websocket.query_params.get("token") or websocket.cookies.get("aquasense_session")
+    # Authenticate from the HttpOnly cookie; never put bearer tokens in URLs.
+    token = websocket.cookies.get("aquasense_session")
     from ..db import SessionLocal
     db = SessionLocal()
     try:
@@ -1047,6 +1241,7 @@ async def measurements_socket(websocket: WebSocket) -> None:
         if not user or not user.is_active:
             await websocket.close(code=4401)
             return
+        websocket.state.aquasense_role = user.role
         await socket_manager.connect(websocket, user.id)
     finally:
         db.close()
