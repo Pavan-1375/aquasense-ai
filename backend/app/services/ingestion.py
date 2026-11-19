@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..models import Alert, Device, IngestionReceipt, Measurement, Station
+from ..models import Alert, Device, IngestionReceipt, Measurement, Station, User
 from ..schemas import MeasurementIn
 
 
@@ -43,6 +43,22 @@ def save_measurement_with_key(db: Session, payload: MeasurementIn, source: str =
         raise HTTPException(status_code=409, detail="Duplicate reading for this device and timestamp")
     stale = timestamp < now - timedelta(hours=get_settings().stale_measurement_hours)
     station = db.get(Station, device.station_id) if device.station_id else None
+    # The serial bridge may auto-register the single project device before the
+    # admin has opened Devices & Stations. In this project workflow, bind that
+    # unassigned device to the oldest administrator-owned station once, so its
+    # packets become visible to the authorised admin account without exposing
+    # ownerless readings to other users.
+    if station is None and device.station_id is None:
+        admin_station = (
+            db.query(Station)
+            .join(User, Station.owner_id == User.id)
+            .filter(User.role == "admin")
+            .order_by(Station.created_at.asc())
+            .first()
+        )
+        if admin_station:
+            device.station_id = admin_station.id
+            station = admin_station
     measurement = Measurement(
         owner_id=station.owner_id if station else None,
         device_id=payload.device_id,
