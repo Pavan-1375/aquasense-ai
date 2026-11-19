@@ -544,8 +544,30 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
   )
 }
 
+function LiveGroundwaterIntelligence() {
+  type LiveLevel = { id: string; timestamp: string; created_at?: string; distance_cm?: number | null; water_level_percent?: number | null; source: string }
+  const [rows, setRows] = useState<LiveLevel[]>([])
+  const accelerated = readStorage('bottle-study-accelerated', true)
+  const clockStart = readStorage('bottle-study-clock-start', Date.now())
+  const [refreshAt, setRefreshAt] = useState(Date.now())
+  useEffect(() => { const load = () => apiFetch<LiveLevel[]>('/api/measurements?status=pending_review&limit=2000').then(setRows).catch(() => setRows([])); load(); const timer = window.setInterval(() => { load(); setRefreshAt(Date.now()) }, 10000); return () => window.clearInterval(timer) }, [])
+  const assignments = readStorage<Record<string, number>>('bottle-study-assignments', {})
+  const startDate = readStorage('bottle-study-start-date', '') || new Date().toLocaleDateString('en-CA')
+  const startMs = Date.parse(`${startDate}T00:00:00Z`)
+  const days = Array.from({ length: 7 }, (_, index) => { const date = new Date(startMs + index * 86400000).toISOString().slice(0, 10); const values = rows.filter(row => row.source === 'http' && (row.distance_cm != null || row.water_level_percent != null)).filter(row => accelerated ? assignments[row.id] === index : new Date(row.timestamp).toLocaleDateString('en-CA') === date); return values.length ? values : [] })
+  const latestRows = rows.filter(row => row.source === 'http' && (row.distance_cm != null || row.water_level_percent != null)).sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))
+  const latest = latestRows[0]
+  const levelMode = latestRows.some(row => row.water_level_percent != null && row.water_level_percent > 0)
+  const means = days.map(values => { if (!values.length) return null; return values.reduce((sum, row) => sum + (levelMode ? (row.water_level_percent ?? 0) : (row.distance_cm ?? 0)), 0) / values.length }).filter((value): value is number => value != null)
+  const first = means[0]; const last = means.at(-1); const delta = first != null && last != null ? last - first : null
+  const depletionSignal = delta == null ? 'Awaiting 2 study days' : levelMode ? (delta < -5 ? 'High signal' : delta < -2 ? 'Medium signal' : 'Low signal') : (delta > 5 ? 'High signal' : delta > 2 ? 'Medium signal' : 'Low signal')
+  const forecast = last != null && means.length > 1 ? Math.max(0, last + ((last - first!) / (means.length - 1)) * 7) : null
+  void refreshAt
+  return <section className="panel module-card"><div className="panel-heading"><div><div className="eyebrow">Live study intelligence</div><h2>Storage status and trend</h2><p className="module-copy">Uses the persisted seven-day live study. Pending readings are shown as a bottle proxy until an administrator approves real borewell observations.</p></div><span className="quality-badge amber"><Gauge size={14}/> {depletionSignal}</span></div><div className="metric-grid"><MetricCard label="Storage status" value={latest ? levelMode ? `${(latest.water_level_percent ?? 0).toFixed(1)}%` : `${(latest.distance_cm ?? 0).toFixed(1)} cm` : '—'} detail={levelMode ? 'Latest reported water level' : 'Latest sensor distance proxy'} icon={<Droplets size={17}/>} /><MetricCard label="Latest trend" value={delta == null ? '—' : `${delta > 0 ? '+' : ''}${delta.toFixed(1)} ${levelMode ? 'percentage points' : 'cm'}`} detail={levelMode ? 'Positive is rising level' : 'Positive is increasing distance'} icon={<Activity size={17}/>} /><MetricCard label="7-day forecast" value={forecast == null ? '—' : `${forecast.toFixed(1)} ${levelMode ? '%' : 'cm'}`} detail={means.length > 1 ? 'Transparent linear proxy' : 'Need two recorded days'} icon={<ArrowDownRight size={17}/>} /></div><div className="setting-note"><ShieldCheck size={15}/>Updated automatically from stored live packets. A distance-only bottle study cannot establish groundwater storage, seasonal depletion, or a calibrated percentage.</div></section>
+}
+
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: ReactNode }) {
-  return <><div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action}</div>{eyebrow === 'Iot · live monitoring' && <><BottleStudyPanel /><StudyIntelligencePanel /></>}</>
+  return <><div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action}</div>{eyebrow === 'Iot · live monitoring' && <><BottleStudyPanel /><StudyIntelligencePanel /></>}{eyebrow === 'Groundwater · level' && <LiveGroundwaterIntelligence />}</>
 }
 
 function OverviewPage({ navigate, prediction, dashboard, values, location, geoStatus, requestLocation, onSelectLocation, role, updates, onReviewUpdate, accounts }: { navigate: (page: Page) => void; prediction: { label: string; confidence: number | null }; dashboard: DashboardSnapshot | null; values: Record<string, number>; location: LiveLocation | null; geoStatus: 'idle' | 'requesting' | 'granted' | 'denied'; requestLocation: () => void; onSelectLocation: (location: LiveLocation) => void; role: Role; updates: QualityUpdate[]; onReviewUpdate: (id: string) => void; accounts: Account[] }) {
