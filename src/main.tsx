@@ -986,11 +986,23 @@ function SubmitMonitoringPage({ account, location, requestLocation, onSelectLoca
   const submit = async (saveAsDraft: boolean) => {
     setBusy(true); setError(''); setMessage('')
     try {
-      if (!stationId) throw new Error('Select a monitoring station before saving the submission.')
+      // The form can be submitted immediately after a map pin. Resolve the
+      // pinned station here as well, instead of relying on the async station
+      // list effect having completed first.
+      let submitStationId = stationId
+      if (!submitStationId && location) {
+        const synced = await syncLocationToBackend(location) as { station_id?: string }
+        submitStationId = synced.station_id || ''
+        if (submitStationId) {
+          setStationId(submitStationId)
+          setStations((previous) => previous.length ? previous : [{ id: submitStationId, name: `Pinned site · ${location.place?.label ?? formatCoordinates(location)}` }])
+        }
+      }
+      if (!submitStationId) throw new Error('Pin a site on the main map or enter an address before saving the submission.')
       const groundwaterPayload = category === 'groundwater' ? Object.fromEntries(Object.entries(groundwater).map(([key, value]) => [key, numberOrUndefined(value)]).filter(([, value]) => value !== undefined)) : undefined
       const qualityPayload = category === 'quality' ? Object.fromEntries(Object.entries(quality).map(([key, value]) => [key, numberOrUndefined(value)]).filter(([, value]) => value !== undefined)) : undefined
       if (!groundwaterPayload && !qualityPayload) throw new Error('Enter at least one measured value.')
-      const payload = { station_id: stationId, measurement_at: new Date(measurementAt).toISOString(), measurement_method: method, source: 'user-entered', groundwater: groundwaterPayload, quality: qualityPayload, remarks: remarks.trim() || undefined, save_as_draft: saveAsDraft }
+      const payload = { station_id: submitStationId, measurement_at: new Date(measurementAt).toISOString(), measurement_method: method, source: 'user-entered', groundwater: groundwaterPayload, quality: qualityPayload, remarks: remarks.trim() || undefined, save_as_draft: saveAsDraft }
       let created: SubmissionRecord
       created = await apiFetch<SubmissionRecord>('/api/submissions', { method: 'POST', body: JSON.stringify(payload) })
       if (attachment && created.id && !created.id.startsWith('local-')) {
