@@ -95,6 +95,7 @@ type LocationSearchResult = {
 }
 
 type HistoricalGroundwaterRow = { station_name: string; state: string; district: string; latitude: number; longitude: number; measured_at: string; groundwater_level_m: number; source_period: string }
+type SelectedStation = { station_name: string; state: string; district: string; latitude: number; longitude: number }
 
 async function loadHistoricalGroundwater(): Promise<HistoricalGroundwaterRow[]> {
   const response = await fetch('/data/groundwater_required_columns.csv')
@@ -354,6 +355,7 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
   const [themePromptOpen, setThemePromptOpen] = useState(() => !window.localStorage.getItem(storageKey('theme-v3')))
   const [accountOpen, setAccountOpen] = useState(false)
   const [location, setLocation] = useState<LiveLocation | null>(() => currentAccount.lastLocation ?? readStorage<LiveLocation | null>('selected-map-location', null))
+  const [selectedStation, setSelectedStation] = useState<SelectedStation | null>(() => readStorage<SelectedStation | null>('selected-station', null))
   const [trackingLocation, setTrackingLocation] = useState(false)
   const [geoStatus, setGeoStatus] = useState<'idle' | 'requesting' | 'granted' | 'denied'>(location ? 'granted' : 'idle')
   const [geoMessage, setGeoMessage] = useState('')
@@ -470,6 +472,12 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
     setGeoStatus('granted')
   }
 
+  const selectStation = (station: SelectedStation) => {
+    setSelectedStation(station)
+    writeStorage('selected-station', station)
+    selectMapLocation({ latitude: station.latitude, longitude: station.longitude, accuracy: 10, updatedAt: new Date().toISOString(), place: { label: `${station.station_name}, ${station.district}, ${station.state}`, state: station.state, district: station.district, city: station.station_name, country: 'India' } })
+  }
+
   const submitQualityUpdate = () => {
     const update: QualityUpdate = {
       id: `${Date.now()}`,
@@ -562,13 +570,13 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
           {page === 'quality' && <QualityPage values={values} setValues={setValues} prediction={prediction} isLive={isLive} setIsLive={setIsLive} location={location} role={currentAccount.role} onSubmit={submitQualityUpdate} />}
           {page === 'submit' && <SubmitMonitoringPage account={currentAccount} location={location} requestLocation={requestLocation} onSelectLocation={selectMapLocation} onSubmitted={() => setLastUpdated('submission saved')} />}
           {page === 'submissions' && <MySubmissionsPage />}
-          {page === 'level' && <LevelPage role={currentAccount.role} />}
+          {page === 'level' && <LevelPage role={currentAccount.role} selectedStation={selectedStation} />}
           {page === 'advisor' && <AdvisorPage values={values} prediction={prediction} />}
-          {page === 'history' && <HistoryAnalyticsPage values={values} location={location} />}
-          {page === 'devices' && <DevicesStationsPage role={currentAccount.role} location={location} />}
+          {page === 'history' && <HistoryAnalyticsPage values={values} location={location} selectedStation={selectedStation} />}
+          {page === 'devices' && <DevicesStationsPage role={currentAccount.role} location={location} selectedStation={selectedStation} />}
           {page === 'alerts' && <AlertsPage />}
           {page === 'notifications' && <NotificationsPage account={currentAccount} />}
-          {page === 'map' && <MapLocationsPage location={location} geoStatus={geoStatus} requestLocation={requestLocation} onSelectLocation={selectMapLocation} accounts={accounts} />}
+          {page === 'map' && <MapLocationsPage location={location} geoStatus={geoStatus} requestLocation={requestLocation} onSelectLocation={selectMapLocation} onSelectStation={selectStation} accounts={accounts} />}
           {page === 'reports' && <ReportsPage />}
           {page === 'education' && <EducationPage />}
           {page === 'settings' && <SettingsPageV2 account={currentAccount} theme={theme} onThemeChange={setTheme} location={location} geoStatus={geoStatus} requestLocation={requestLocation} onSignOut={onSignOut} />}
@@ -639,7 +647,7 @@ function OverviewPage({ navigate, prediction, dashboard, values, location, geoSt
   </>
 }
 
-function LiveMap({ location, geoStatus, onRequest, onSelectLocation, accounts }: { location: LiveLocation | null; geoStatus: 'idle' | 'requesting' | 'granted' | 'denied'; onRequest: () => void; onSelectLocation: (location: LiveLocation) => void; accounts: Account[] }) {
+function LiveMap({ location, geoStatus, onRequest, onSelectLocation, onSelectStation, accounts }: { location: LiveLocation | null; geoStatus: 'idle' | 'requesting' | 'granted' | 'denied'; onRequest: () => void; onSelectLocation: (location: LiveLocation) => void; onSelectStation?: (station: SelectedStation) => void; accounts: Account[] }) {
   const mapNodeRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
   const layerRef = useRef<L.TileLayer | null>(null)
@@ -853,9 +861,10 @@ function LiveMap({ location, geoStatus, onRequest, onSelectLocation, accounts }:
       const latest = history.at(-1)?.groundwater_level_m ?? station.groundwater_level_m
       const average = levels.reduce((sum, value) => sum + value, 0) / Math.max(1, levels.length)
       const stationIcon = L.divIcon({ className: 'station-map-icon', html: '<span class="station-map-pin">⌖</span>', iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -15] })
-      L.marker([station.latitude, station.longitude], { icon: stationIcon }).bindPopup(`<b>${station.station_name}</b><br/>${station.district}, ${station.state}<br/>Historical dataset · ${station.source_period}<br/>Latest level: ${latest.toFixed(2)} m<br/>Average in loaded sample: ${average.toFixed(2)} m<br/>Records: ${history.length}`).addTo(markers)
+      const marker = L.marker([station.latitude, station.longitude], { icon: stationIcon }).bindPopup(`<b>${station.station_name}</b><br/>${station.district}, ${station.state}<br/>Historical dataset · ${station.source_period}<br/>Latest level: ${latest.toFixed(2)} m<br/>Average in loaded sample: ${average.toFixed(2)} m<br/>Records: ${history.length}<br/><strong>Click this pin to select station</strong>`).addTo(markers)
+      marker.on('click', () => onSelectStation?.({ station_name: station.station_name, state: station.state, district: station.district, latitude: station.latitude, longitude: station.longitude }))
     })
-  }, [location, accounts, areaBounds, readingLocations, historicalRows])
+  }, [location, accounts, areaBounds, readingLocations, historicalRows, onSelectStation])
 
   const nearbyUsers = accounts.filter((account) => account.lastLocation).length
   const placeTitle = placeContext ? [placeContext.city, placeContext.district, placeContext.state].filter(Boolean).slice(0, 2).join(', ') || placeContext.country || 'Selected site' : placeStatus === 'loading' ? 'Resolving area name…' : location ? 'Selected map site' : 'No site selected'
@@ -924,7 +933,7 @@ function InsightPanel({ prediction, values, role, location, onSubmit }: { predic
 function Finding({ label, value, limit }: { label: string; value: string; limit: string }) { return <div className="finding"><span className="status-dot green" /><div><strong>{label}</strong><span>{value} <em>· limit {limit}</em></span></div><Check size={14} className="green-icon" /></div> }
 function Suitability({ label, state, tone }: { label: string; state: string; tone: string }) { return <div className="suitability"><span>{label}</span><strong className={tone}>{state}</strong></div> }
 
-function LevelPage({ role }: { role: Role }) {
+function LevelPage({ role, selectedStation }: { role: Role; selectedStation: SelectedStation | null }) {
   const [dashboard, setDashboard] = useState<DashboardSnapshot | null>(null)
   const [liveRows, setLiveRows] = useState<Array<{ distance_cm?: number | null; water_level_percent?: number | null; water_depth_cm?: number | null; timestamp: string }>>([])
   const [historicalRows, setHistoricalRows] = useState<HistoricalGroundwaterRow[]>([])
@@ -1217,8 +1226,8 @@ function mergeLiveReadings<T extends { id: string }>(current: T[], incoming: T[]
   return Array.from(new Map([...incoming, ...current].map((reading) => [reading.id, reading])).values()).slice(0, 100)
 }
 
-function MapLocationsPage({ location, geoStatus, requestLocation, onSelectLocation, accounts }: { location: LiveLocation | null; geoStatus: 'idle' | 'requesting' | 'granted' | 'denied'; requestLocation: () => void; onSelectLocation: (location: LiveLocation) => void; accounts: Account[] }) {
-  return <><PageHeader eyebrow="Map · locations" title="Map and locations" description="Search a place, select a test area, and review shared monitoring locations." /><section className="panel module-map-panel"><LiveMap location={location} geoStatus={geoStatus} onRequest={requestLocation} onSelectLocation={onSelectLocation} accounts={accounts} /></section><div className="module-grid three"><MetricCard label="Mapped accounts" value={String(accounts.filter((account) => account.lastLocation).length)} detail="Locations shared in this workspace" icon={<Users size={17} />} /><MetricCard label="Selected site" value={location ? 'Ready' : 'Not set'} detail={location ? formatCoordinates(location) : 'Search or click the map'} icon={<MapPinned size={17} />} /><MetricCard label="Location privacy" value="Explicit" detail="Reverse geocoding requires an action" icon={<ShieldCheck size={17} />} /></div></>
+function MapLocationsPage({ location, geoStatus, requestLocation, onSelectLocation, onSelectStation, accounts }: { location: LiveLocation | null; geoStatus: 'idle' | 'requesting' | 'granted' | 'denied'; requestLocation: () => void; onSelectLocation: (location: LiveLocation) => void; onSelectStation: (station: SelectedStation) => void; accounts: Account[] }) {
+  return <><PageHeader eyebrow="Map · locations" title="Map and locations" description="Search a place, select a test area, and review shared monitoring locations." /><section className="panel module-map-panel"><LiveMap location={location} geoStatus={geoStatus} onRequest={requestLocation} onSelectLocation={onSelectLocation} onSelectStation={onSelectStation} accounts={accounts} /></section><div className="module-grid three"><MetricCard label="Mapped accounts" value={String(accounts.filter((account) => account.lastLocation).length)} detail="Locations shared in this workspace" icon={<Users size={17} />} /><MetricCard label="Selected site" value={location ? 'Ready' : 'Not set'} detail={location ? formatCoordinates(location) : 'Search or click the map'} icon={<MapPinned size={17} />} /><MetricCard label="Location privacy" value="Explicit" detail="Reverse geocoding requires an action" icon={<ShieldCheck size={17} />} /></div></>
 }
 
 function AdvisorPage({ values, prediction }: { values: Record<string, number>; prediction: { label: string; confidence: number | null } }) {
@@ -1239,7 +1248,7 @@ function AdvisorPage({ values, prediction }: { values: Record<string, number>; p
   return <><PageHeader eyebrow="Ai · water advisor" title="AI water advisor" description="A deterministic local advisor that uses the current workspace values without inventing measurements." /><div className="advisor-layout"><section className="panel advisor-chat"><div className="panel-heading"><div><div className="eyebrow">Contextual assistant</div><h2>Ask about this workspace</h2></div><span className="quality-badge good"><span className="status-dot green" />Local mode</span></div><div className="advisor-messages">{messages.length === 0 ? <div className="empty-state"><Sparkles size={16} className="cyan-icon" />Ask a question to generate a grounded explanation.</div> : messages.map((message, index) => <div className="advisor-message" key={`${message.question}-${index}`}><strong>{message.question}</strong><p>{message.answer}</p></div>)}</div><form className="advisor-form" onSubmit={(event) => { event.preventDefault(); answerQuestion() }}><input aria-label="Ask the water advisor" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="What does my WQI mean?" /><button className="button primary" type="submit"><ArrowUpRight size={14} /> Ask</button></form></section><section className="panel prompt-panel"><div className="panel-heading"><div><div className="eyebrow">Suggested prompts</div><h2>Start with a question</h2></div></div>{['What does my water quality result mean?', 'What is the groundwater status?', 'How can I conserve groundwater?', 'What do the forecast limitations mean?'].map((prompt) => <button className="prompt-button" key={prompt} onClick={() => answerQuestion(prompt)}><Sparkles size={14} />{prompt}<ArrowUpRight size={13} /></button>)}</section></div></>
 }
 
-function HistoryAnalyticsPage({ values, location }: { values: Record<string, number>; location: LiveLocation | null }) {
+function HistoryAnalyticsPage({ values, location, selectedStation }: { values: Record<string, number>; location: LiveLocation | null; selectedStation: SelectedStation | null }) {
   const [range, setRange] = useState('24h')
   const exportCsv = () => {
     const rows = [['parameter', 'value', 'unit', 'source'], ['pH', values.pH.toFixed(2), 'pH', 'manual workspace reading'], ['EC', String(Math.round(values.EC_uS_cm)), 'µS/cm', 'manual workspace reading'], ['TDS', String(Math.round(values.TDS_mg_L)), 'mg/L', 'manual workspace reading']]
@@ -1250,7 +1259,7 @@ function HistoryAnalyticsPage({ values, location }: { values: Record<string, num
   return <><PageHeader eyebrow="Analytics · history" title="History and analytics" description="Filter the selected workspace readings and export the same dataset used in the summary." action={<button className="button ghost" onClick={exportCsv}><FileText size={15} /> Export CSV</button>} /><div className="filter-row"><button className={`filter ${range === '24h' ? 'active' : ''}`} onClick={() => setRange('24h')}>24 hours</button><button className={`filter ${range === '7d' ? 'active' : ''}`} onClick={() => setRange('7d')}>7 days</button><button className={`filter ${range === '30d' ? 'active' : ''}`} onClick={() => setRange('30d')}>30 days</button><span className="filter-spacer" /><span className="quality-badge good"><span className="status-dot green" />{location ? 'Site linked' : 'No site selected'}</span></div><div className="metric-grid"><MetricCard label="Selected range" value={range} detail="Date filter applied to this view" icon={<RefreshCw size={17} />} /><MetricCard label="Available values" value="5" detail="Configured quality parameters" icon={<Activity size={17} />} /><MetricCard label="Data quality" value="Manual" detail="Clearly marked source" icon={<ShieldCheck size={17} />} /><MetricCard label="Missing series" value="—" detail="Backend import required" icon={<Cloud size={17} />} /></div><section className="panel module-card"><div className="panel-heading"><div><div className="eyebrow">Current workspace reading</div><h2>Filter-consistent table</h2></div><span className="model-label">{range}</span></div><div className="table-row table-head history-row"><span>Parameter</span><span>Value</span><span>Unit</span><span>Source</span></div>{parameterConfig.map((config) => <div className="table-row history-row" key={config.key}><span>{config.name}</span><strong>{formatValue(values[config.key], config)}</strong><span className="muted-cell">{config.unit}</span><span className="muted-cell">Manual workspace</span></div>)}</section></>
 }
 
-function DevicesStationsPage({ role, location }: { role: Role; location: LiveLocation | null }) {
+function DevicesStationsPage({ role, location, selectedStation }: { role: Role; location: LiveLocation | null; selectedStation: SelectedStation | null }) {
   const [deviceName, setDeviceName] = useState('')
   const [deviceId, setDeviceId] = useState('ESP32-001')
   const [ingestKey, setIngestKey] = useState('')
