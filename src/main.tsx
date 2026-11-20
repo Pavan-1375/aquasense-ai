@@ -565,7 +565,7 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
           </div>
         </header>
         <div className="content-wrap">
-          {page === 'overview' && <OverviewPage navigate={navigate} prediction={prediction} dashboard={dashboard} values={values} location={location} geoStatus={geoStatus} requestLocation={requestLocation} onSelectLocation={selectMapLocation} role={currentAccount.role} updates={updates} onReviewUpdate={reviewUpdate} accounts={accounts} />}
+          {page === 'overview' && <OverviewPage navigate={navigate} prediction={prediction} dashboard={dashboard} values={values} location={location} geoStatus={geoStatus} requestLocation={requestLocation} onSelectLocation={selectMapLocation} onSelectStation={selectStation} role={currentAccount.role} updates={updates} onReviewUpdate={reviewUpdate} accounts={accounts} />}
           {page === 'live' && <LiveMonitoringPage location={location} geoStatus={geoStatus} requestLocation={requestLocation} role={currentAccount.role} />}
           {page === 'quality' && <QualityPage values={values} setValues={setValues} prediction={prediction} isLive={isLive} setIsLive={setIsLive} location={location} role={currentAccount.role} onSubmit={submitQualityUpdate} />}
           {page === 'submit' && <SubmitMonitoringPage account={currentAccount} location={location} requestLocation={requestLocation} onSelectLocation={selectMapLocation} onSubmitted={() => setLastUpdated('submission saved')} />}
@@ -631,7 +631,7 @@ function PageHeader({ eyebrow, title, description, action, station = readStorage
   return <><div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div><div className="page-header-actions">{links.map(([label, page]) => <button className="button ghost small" key={page} onClick={() => jump(page)}>{label} <ArrowUpRight size={13}/></button>)}{action}</div></div>{station && <StationContextPanel station={station} />}{eyebrow === 'Iot · live monitoring' && <><BottleStudyPanel /><StudyIntelligencePanel /></>}</>
 }
 
-function OverviewPage({ navigate, prediction, dashboard, values, location, geoStatus, requestLocation, onSelectLocation, role, updates, onReviewUpdate, accounts }: { navigate: (page: Page) => void; prediction: { label: string; confidence: number | null }; dashboard: DashboardSnapshot | null; values: Record<string, number>; location: LiveLocation | null; geoStatus: 'idle' | 'requesting' | 'granted' | 'denied'; requestLocation: () => void; onSelectLocation: (location: LiveLocation) => void; role: Role; updates: QualityUpdate[]; onReviewUpdate: (id: string) => void; accounts: Account[] }) {
+function OverviewPage({ navigate, prediction, dashboard, values, location, geoStatus, requestLocation, onSelectLocation, onSelectStation, role, updates, onReviewUpdate, accounts }: { navigate: (page: Page) => void; prediction: { label: string; confidence: number | null }; dashboard: DashboardSnapshot | null; values: Record<string, number>; location: LiveLocation | null; geoStatus: 'idle' | 'requesting' | 'granted' | 'denied'; requestLocation: () => void; onSelectLocation: (location: LiveLocation) => void; onSelectStation: (station: SelectedStation) => void; role: Role; updates: QualityUpdate[]; onReviewUpdate: (id: string) => void; accounts: Account[] }) {
   const pendingUpdates = updates.filter((update) => update.status === 'pending')
   return <>
     <PageHeader eyebrow={role === 'admin' ? 'Admin · fleet overview' : 'FLEET OVERVIEW'} title={role === 'admin' ? 'Admin review center' : 'Good morning, field operator'} description={location ? `Live test site · ${formatCoordinates(location)}` : 'Set your live location to create the current test site.'} action={<button className="button primary" onClick={() => navigate('quality')}><Play size={15} /> Start quality test</button>} />
@@ -644,7 +644,7 @@ function OverviewPage({ navigate, prediction, dashboard, values, location, geoSt
     <div className="overview-grid">
       <section className="panel network-panel">
         <div className="panel-heading"><div><div className="eyebrow">Live location</div><h2>Current test site</h2></div><button className="text-button" onClick={requestLocation}><MapPinned size={14} /> Update location</button></div>
-        <LiveMap location={location} geoStatus={geoStatus} onRequest={requestLocation} onSelectLocation={onSelectLocation} accounts={accounts} />
+        <LiveMap location={location} geoStatus={geoStatus} onRequest={requestLocation} onSelectLocation={onSelectLocation} onSelectStation={onSelectStation} accounts={accounts} />
         <div className="site-table"><div className="table-row table-head"><span>Site</span><span>Status</span><span>Quality</span><span>Accuracy</span></div><SiteRow name="Current test site" type={location ? formatCoordinates(location) : 'No browser location linked'} status={location ? 'Online' : 'Needs location'} quality={location ? prediction.label : 'Unavailable'} level={location ? `±${Math.round(location.accuracy)}m` : '—'} selected={!location} warning={!location} /></div>
       </section>
       <div className="right-stack">
@@ -870,7 +870,7 @@ function LiveMap({ location, geoStatus, onRequest, onSelectLocation, onSelectSta
       const average = levels.reduce((sum, value) => sum + value, 0) / Math.max(1, levels.length)
       const stationIcon = L.divIcon({ className: 'station-map-icon', html: '<span class="station-map-pin">⌖</span>', iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -15] })
       const marker = L.marker([station.latitude, station.longitude], { icon: stationIcon }).bindPopup(`<b>${station.station_name}</b><br/>${station.district}, ${station.state}<br/>Historical dataset · ${station.source_period}<br/>Latest level: ${latest.toFixed(2)} m<br/>Average in loaded sample: ${average.toFixed(2)} m<br/>Records: ${history.length}<br/><strong>Click this pin to select station</strong>`).addTo(markers)
-      marker.on('click', () => onSelectStation?.({ station_name: station.station_name, state: station.state, district: station.district, latitude: station.latitude, longitude: station.longitude }))
+      marker.on('click', () => { onSelectStation?.({ station_name: station.station_name, state: station.state, district: station.district, latitude: station.latitude, longitude: station.longitude }); mapRef.current?.setView([station.latitude, station.longitude], Math.max(mapRef.current.getZoom(), 12), { animate: true }) })
     })
   }, [location, accounts, areaBounds, readingLocations, historicalRows, onSelectStation])
 
