@@ -8,7 +8,7 @@ import secrets
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, File, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi import Response
 from sqlalchemy import desc, text
 from sqlalchemy.orm import Session
@@ -707,6 +707,26 @@ async def upload_submission_attachment(submission_id: str, file: UploadFile = Fi
     db.add(AuditEvent(user_id=user.id, event_type="submission.attachment_uploaded", detail=json.dumps({"submission_id": submission.id, "filename": attachment.filename})))
     db.commit()
     return {"id": attachment.id, "filename": attachment.filename, "size_bytes": attachment.size_bytes, "status": "stored"}
+
+
+@router.get("/submissions/{submission_id}/attachments")
+def list_submission_attachments(submission_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict]:
+    submission = db.get(SubmissionBatch, submission_id)
+    if not submission or (submission.user_id != user.id and user.role != "admin"):
+        raise HTTPException(status_code=404, detail="Submission not found")
+    return [{"id": item.id, "filename": item.filename, "content_type": item.content_type, "size_bytes": item.size_bytes} for item in db.query(SubmissionAttachment).filter(SubmissionAttachment.submission_id == submission_id).all()]
+
+
+@router.get("/submissions/{submission_id}/attachments/{attachment_id}")
+def download_submission_attachment(submission_id: str, attachment_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> FileResponse:
+    submission = db.get(SubmissionBatch, submission_id)
+    attachment = db.get(SubmissionAttachment, attachment_id)
+    if not submission or not attachment or attachment.submission_id != submission_id or (submission.user_id != user.id and user.role != "admin"):
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    path = Path(attachment.storage_path)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Attachment file is unavailable")
+    return FileResponse(path, media_type=attachment.content_type, filename=attachment.filename)
 
 
 @router.get("/admin/submissions", response_model=SubmissionListResponse)
