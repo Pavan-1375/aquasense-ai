@@ -1,5 +1,5 @@
 param(
-  [string]$Endpoint = "https://aquasense-api-production-22173672.up.railway.app/api/ingest/http",
+  [string]$Endpoint = "https://aquasense-api-production-bd2c91ed.up.railway.app/api/ingest/http",
   [string]$DeviceId = "ESP32-001",
   [int]$Baud = 115200,
   [double]$MinInterval = 0.25
