@@ -526,7 +526,6 @@ function App({ accounts, currentAccount, onAccountUpdate, onSignOut }: { account
 
   return (
     <div className="app-shell">
-      {selectedStation && <div className="selected-station-global"><StationContextPanel station={selectedStation} /></div>}
       <aside className={`sidebar ${mobileNav ? 'sidebar-open' : ''}`}>
         <div className="brand-row">
           <div className="brand-mark"><Waves size={20} strokeWidth={2.3} /></div>
@@ -933,16 +932,6 @@ function InsightPanel({ prediction, values, role, location, onSubmit }: { predic
 
 function Finding({ label, value, limit }: { label: string; value: string; limit: string }) { return <div className="finding"><span className="status-dot green" /><div><strong>{label}</strong><span>{value} <em>· limit {limit}</em></span></div><Check size={14} className="green-icon" /></div> }
 function Suitability({ label, state, tone }: { label: string; state: string; tone: string }) { return <div className="suitability"><span>{label}</span><strong className={tone}>{state}</strong></div> }
-
-function StationContextPanel({ station }: { station: SelectedStation }) {
-  const [rows, setRows] = useState<HistoricalGroundwaterRow[]>([])
-  useEffect(() => { loadHistoricalGroundwater().then((all) => setRows(all.filter((row) => row.station_name === station.station_name && row.state === station.state))).catch(() => setRows([])) }, [station.station_name, station.state])
-  const recent = rows.slice(-30)
-  const mean = (values: HistoricalGroundwaterRow[]) => values.length ? values.reduce((sum, row) => sum + row.groundwater_level_m, 0) / values.length : null
-  const latest = recent.at(-1)?.groundwater_level_m ?? null
-  const trend = recent.length > 1 ? latest! - recent[0].groundwater_level_m : null
-  return <section className="panel module-card station-context-panel"><div className="panel-heading"><div><div className="eyebrow">Selected mapped station · historical dataset</div><h2>Groundwater level of {station.station_name}</h2><p className="module-copy">{station.district}, {station.state} · {station.latitude.toFixed(5)}, {station.longitude.toFixed(5)}</p></div><span className="quality-badge good"><Database size={14} />Mapped station</span></div><div className="metric-grid"><MetricCard label="Latest level" value={latest == null ? '—' : `${latest.toFixed(2)} m`} detail="Latest stored dataset record" icon={<Gauge size={17} />} /><MetricCard label="24-hour average" value={mean(rows.slice(-4)) == null ? '—' : `${mean(rows.slice(-4))!.toFixed(2)} m`} detail="Recent telemetry window" icon={<Clock3 size={17} />} /><MetricCard label="7-day average" value={mean(rows.slice(-7)) == null ? '—' : `${mean(rows.slice(-7))!.toFixed(2)} m`} detail="Recent station records" icon={<CalendarDays size={17} />} /><MetricCard label="30-day trend" value={trend == null ? '—' : `${trend > 0 ? '+' : ''}${trend.toFixed(2)} m`} detail={trend == null ? 'Insufficient history' : trend < 0 ? 'Falling level signal' : 'Rising level signal'} icon={<ArrowDownRight size={17} />} /></div><div className="setting-note"><ShieldCheck size={15} />Historical dataset mode. This station is mapped and selected across the workspace; it is not a live ESP32 reading.</div></section>
-}
 
 function LevelPage({ role, selectedStation }: { role: Role; selectedStation: SelectedStation | null }) {
   const [dashboard, setDashboard] = useState<DashboardSnapshot | null>(null)
