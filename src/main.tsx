@@ -675,6 +675,13 @@ function LiveMap({ location, geoStatus, onRequest, onSelectLocation, onSelectSta
   const suppressAutocompleteRef = useRef(false)
 
   useEffect(() => {
+    if (location?.place) {
+      setPlaceContext(location.place)
+      setPlaceStatus('ready')
+    }
+  }, [location?.place?.label, location?.updatedAt])
+
+  useEffect(() => {
     const loadReadingLocations = async () => {
       try {
         const [pending, reviewed] = await Promise.all([
